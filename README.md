@@ -1,10 +1,21 @@
-# Telegram GoFile Bot (Final Version)
+# Telegram GoFile Bot (Updated)
 
-Bot ini menerima media Telegram, zip jika perlu, upload ke GoFile.
+Bot Telegram ini akan:
+- Terima media (document/photo)
+- Zip fail jika belum `.zip`
+- Upload ke GoFile terus
+- Jika fail sudah `.zip`, terus upload
+
+## Fail penting
+- `bot.py`
+- `requirements.txt`
+- `.github/workflows/bot.yml`
 
 ## GitHub Secrets
-- TELEGRAM_TOKEN
+- `TELEGRAM_TOKEN`
 
-## Workflow
-- Cron setiap 5 jam
-- Cancel-in-progress aktif
+## Cara guna
+Push ke branch `main` atau tunggu cron setiap 5 jam. Workflow akan batalkan run lama jika ada run baru.
+
+## Nota
+GitHub Actions sesuai untuk polling temporari, bukan hosting 24/7.
