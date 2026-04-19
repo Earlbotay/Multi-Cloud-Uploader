@@ -5,14 +5,12 @@ import json
 import shutil
 import time
 from pathlib import Path
-from telegram import Update
-from telegram.constants import ChatAction
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
 # KONFIGURASI API
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 LOCAL_API_SERVER = "http://127.0.0.1:8081"
 TELEGRAM_DATA_DIR = os.getenv("TELEGRAM_DATA_DIR", "/home/runner/work/Multi-Cloud-Uploader/Multi-Cloud-Uploader/telegram-data")
+BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 CACHE_DIR = Path("bot_cache")
 CACHE_INDEX = CACHE_DIR / "index.json"
@@ -30,6 +28,15 @@ def is_local_api_available():
         return False
 
 USE_LOCAL_API = is_local_api_available()
+API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
+
+def tg_api_call(method, data=None, files=None):
+    try:
+        resp = requests.post(f"{API_URL}/{method}", data=data, files=files, timeout=30)
+        return resp.json()
+    except Exception as e:
+        print(f"TG API Error ({method}): {e}")
+        return None
 
 def load_index():
     with open(CACHE_INDEX, "r") as f: return json.load(f)
@@ -66,34 +73,46 @@ def upload_to_tempsh(file_path: Path):
         return resp.text.strip()
     except Exception as e: return f"Temp.sh Error: {str(e)}"
 
-async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message: return
-
-    attachment = (message.document or message.video or message.audio or 
-                  (message.photo[-1] if message.photo else None) or 
-                  message.voice or message.video_note or message.animation)
+async def process_media(message):
+    chat_id = message['chat']['id']
+    
+    # Kenalpasti jenis media
+    attachment = None
+    if 'document' in message: attachment = message['document']
+    elif 'video' in message: attachment = message['video']
+    elif 'audio' in message: attachment = message['audio']
+    elif 'photo' in message: attachment = message['photo'][-1]
+    elif 'voice' in message: attachment = message['voice']
+    elif 'video_note' in message: attachment = message['video_note']
+    elif 'animation' in message: attachment = message['animation']
+    
     if not attachment: return
 
-    filename = getattr(attachment, 'file_name', None) or f"file_{attachment.file_unique_id}"
-    status_msg = await message.reply_text(f"⏳ Memproses `{filename}`...")
+    file_id = attachment['file_id']
+    filename = attachment.get('file_name') or f"file_{attachment['file_unique_id']}"
+    
+    status_resp = tg_api_call("sendMessage", {"chat_id": chat_id, "text": f"⏳ Memproses `{filename}`...", "parse_mode": "Markdown"})
+    if not status_resp: return
+    status_msg_id = status_resp['result']['message_id']
     
     try:
         cached_path = CACHE_DIR / filename
-        file_obj = await attachment.get_file()
+        
+        # Dapatkan maklumat fail dari API
+        file_info = tg_api_call("getFile", {"file_id": file_id})
+        if not file_info or not file_info.get('ok'):
+            raise Exception("Gagal mendapatkan maklumat fail dari Telegram.")
+        
+        server_path = file_info['result']['file_path']
         
         if USE_LOCAL_API:
-            # CARA 1: RETRIEVE (Ambil dari Local API Server)
-            server_path = file_obj.file_path
             container_base = "/var/lib/telegram-bot-api"
-            
             if server_path.startswith(container_base):
                 relative_path = server_path[len(container_base):].lstrip('/')
                 host_file_path = Path(TELEGRAM_DATA_DIR) / relative_path
             else:
                 host_file_path = Path(TELEGRAM_DATA_DIR) / server_path.lstrip('/')
 
-            # Tunggu fail muncul di cakera
             found = False
             for _ in range(10):
                 if host_file_path.exists():
@@ -104,22 +123,31 @@ async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if found:
                 shutil.copy2(host_file_path, cached_path)
             else:
-                # Sandaran: Cuba muat turun jika fail fizikal tidak dijumpai
-                await file_obj.download_to_drive(cached_path)
+                # Sandaran jika fail fizikal tiada
+                resp = requests.get(f"{API_URL}/file/bot{TELEGRAM_TOKEN}/{server_path}", stream=True)
+                with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
         else:
-            # CARA 2: DOWNLOAD (Guna Standard API)
-            await file_obj.download_to_drive(cached_path)
+            # Download biasa (Standard API)
+            resp = requests.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{server_path}", stream=True)
+            with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
 
         if not cached_path.exists():
             raise FileNotFoundError("Gagal memproses/memuat turun fail.")
 
-        file_size = f"{os.path.getsize(cached_path) / (1024*1024):.2f} MB"
+        file_size_mb = os.path.getsize(cached_path) / (1024*1024)
+        file_size_str = f"{file_size_mb:.2f} MB"
+        
         index = load_index()
-        index[filename] = {"size": file_size, "id": attachment.file_id}
+        index[filename] = {"size": file_size_str, "id": file_id}
         save_index(index)
 
-        await status_msg.edit_text(f"🚀 Memuat naik `{filename}` ({file_size}) ke 3 Cloud...")
-        await message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
+        tg_api_call("editMessageText", {
+            "chat_id": chat_id, 
+            "message_id": status_msg_id, 
+            "text": f"🚀 Memuat naik `{filename}` ({file_size_str}) ke 3 Cloud...",
+            "parse_mode": "Markdown"
+        })
+        tg_api_call("sendChatAction", {"chat_id": chat_id, "action": "upload_document"})
 
         loop = asyncio.get_event_loop()
         tasks = [
@@ -129,30 +157,40 @@ async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         results = await asyncio.gather(*tasks)
         
-        await status_msg.edit_text(
-            f"✅ **Selesai!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size}`\n\n"
-            f"🌐 **Gofile:** {results[0]}\n🐱 **Catbox:** {results[1]}\n⏱ **Temp.sh:** {results[2]}",
-            parse_mode='Markdown'
-        )
+        tg_api_call("editMessageText", {
+            "chat_id": chat_id,
+            "message_id": status_msg_id,
+            "text": (
+                f"✅ **Selesai!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
+                f"🌐 **Gofile:** {results[0]}\n🐱 **Catbox:** {results[1]}\n⏱ **Temp.sh:** {results[2]}"
+            ),
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True
+        })
     except Exception as e:
-        await status_msg.edit_text(f"❌ Ralat: {str(e)}")
+        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_msg_id, "text": f"❌ Ralat: {str(e)}"})
 
-def main():
+async def main():
     if not TELEGRAM_TOKEN:
-        print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai dalam persekitaran!")
+        print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai!")
         return
     
     print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
-    
-    if USE_LOCAL_API:
-        api_url = f"{LOCAL_API_SERVER}/bot"
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).base_url(api_url).local_mode(True).build()
-    else:
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_any_media))
-    
     print("Bot dimulakan.")
-    app.run_polling()
+    
+    offset = 0
+    while True:
+        try:
+            updates = tg_api_call("getUpdates", {"offset": offset, "timeout": 30})
+            if updates and updates.get('ok'):
+                for update in updates['result']:
+                    offset = update['update_id'] + 1
+                    if 'message' in update:
+                        asyncio.create_task(process_media(update['message']))
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            print(f"Polling Error: {e}")
+            await asyncio.sleep(5)
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    asyncio.run(main())
