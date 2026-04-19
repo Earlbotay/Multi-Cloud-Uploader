@@ -1,22 +1,14 @@
-name: telegram-gofile-bot
+name: Multi-Cloud Bot with Local API
 
 on:
   push:
-    branches:
-      - main
-  schedule:
-    - cron: "0 */5 * * *"
+    branches: [ main ]
   workflow_dispatch:
-
-concurrency:
-  group: telegram-gofile-bot-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 295
-
+    
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,9 +19,32 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && pip install -r requirements.txt
+        run: |
+          pip install python-telegram-bot==20.3 requests
+      
+      - name: Cache Bot Data
+        uses: actions/cache@v4
+        with:
+          path: bot_cache
+          key: bot-cache-${{ github.run_id }}
+          restore-keys: |
+            bot-cache-
 
-      - name: Run bot
+      - name: Run Telegram Bot API Server
+        run: |
+          docker run -d -p 8081:8081 --name telegram-bot-api \
+            -e TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }} \
+            -e TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }} \
+            aiogram/telegram-bot-api:latest
+          
+          # Wait for server to start
+          sleep 10
+          docker logs telegram-bot-api
+
+      - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        run: python bot.py
+        run: |
+          # Create cache dir if restored cache is missing
+          mkdir -p bot_cache
+          python bot.py
