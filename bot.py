@@ -68,15 +68,12 @@ async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await message.reply_text(f"⏳ Memproses `{filename}`...")
     
     try:
+        # PENTING: Jangan gunakan get_file().download() untuk Local API
+        # Kita hanya perlukan file_path untuk cari fail di storan tempatan
         file_obj = await attachment.get_file()
-        
-        # In local mode, file_path is an absolute path on the API server.
-        # We need to map it to the host path.
-        # API Server Path: /var/lib/telegram-bot-api/BOT_TOKEN/documents/file...
-        # Host Path: TELEGRAM_DATA_DIR/BOT_TOKEN/documents/file...
-        server_path = file_obj.file_path
-        
-        # Remove the internal container prefix
+        server_path = file_obj.file_path # Ini adalah laluan mutlak dalam Docker
+
+        # Mapping laluan dari Docker ke Host
         container_base = "/var/lib/telegram-bot-api"
         if server_path.startswith(container_base):
             relative_path = server_path[len(container_base):].lstrip('/')
@@ -84,8 +81,14 @@ async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             host_file_path = Path(TELEGRAM_DATA_DIR) / server_path.lstrip('/')
 
+        # Tunggu fail muncul (Local API mungkin ambil masa sikit untuk tulis fail)
+        import time
+        for _ in range(10):
+            if host_file_path.exists(): break
+            time.sleep(1)
+
         if not host_file_path.exists():
-            raise FileNotFoundError(f"File not found on host: {host_file_path}")
+            raise FileNotFoundError(f"Fail tidak dijumpai di hos: {host_file_path}")
 
         cached_path = CACHE_DIR / filename
         shutil.copy2(host_file_path, cached_path)
