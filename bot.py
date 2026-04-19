@@ -19,20 +19,21 @@ CACHE_DIR.mkdir(exist_ok=True)
 if not CACHE_INDEX.exists():
     with open(CACHE_INDEX, "w") as f: json.dump({}, f)
 
-def check_local_api():
+def wait_for_local_api():
     if not TELEGRAM_TOKEN: return False
-    try:
-        # Cuba hubungi Local API (berikan 5 cubaan)
-        for _ in range(5):
-            try:
-                resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=2)
-                if resp.status_code == 200: return True
-            except:
-                pass
-            time.sleep(2)
-        return False
-    except:
-        return False
+    print(f"Menunggu Local API di {LOCAL_API_SERVER}...")
+    # Cuba selama 60 saat (30 cubaan x 2 saat)
+    for i in range(30):
+        try:
+            resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=5)
+            if resp.status_code == 200:
+                print(f"✅ Local API sedia selepas {i*2} saat!")
+                return True
+        except:
+            pass
+        print(f"⏳ Masih menunggu Local API... ({i+1}/30)")
+        time.sleep(2)
+    return False
 
 # Kita akan tentukan mod di dalam main()
 USE_LOCAL_API = False
@@ -190,9 +191,11 @@ async def main():
         print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai!")
         return
     
-    print("Menyemak ketersediaan Local API...")
-    USE_LOCAL_API = check_local_api()
+    USE_LOCAL_API = wait_for_local_api()
     API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
+    
+    if not USE_LOCAL_API:
+        print("⚠️ AMARAN: Local API tidak dikesan. Menggunakan Standard API (Had 20MB aktif!)")
     
     print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
     print("Bot dimulakan.")
