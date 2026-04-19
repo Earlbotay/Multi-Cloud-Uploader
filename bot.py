@@ -106,10 +106,16 @@ async def process_media(message):
     try:
         cached_path = CACHE_DIR / filename
         
-        # Dapatkan maklumat fail dari API
-        file_info = tg_api_call("getFile", {"file_id": file_id})
+        # Dapatkan maklumat fail dari API (dengan cuba semula)
+        file_info = None
+        for _ in range(3):
+            file_info = tg_api_call("getFile", {"file_id": file_id})
+            if file_info and file_info.get('ok'): break
+            time.sleep(2)
+
         if not file_info or not file_info.get('ok'):
-            raise Exception("Gagal mendapatkan maklumat fail dari Telegram.")
+            error_desc = file_info.get('description', 'Tiada huraian ralat') if file_info else 'Tiada respons'
+            raise Exception(f"Gagal mendapatkan maklumat fail: {error_desc}")
         
         server_path = file_info['result']['file_path']
         
