@@ -9,9 +9,8 @@ from pathlib import Path
 # KONFIGURASI API
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 LOCAL_API_SERVER = "http://127.0.0.1:8081"
-TELEGRAM_DATA_DIR = os.getenv("TELEGRAM_DATA_DIR", "/home/runner/work/Multi-Cloud-Uploader/Multi-Cloud-Uploader/telegram-data")
+TELEGRAM_DATA_DIR = os.getenv("TELEGRAM_DATA_DIR", "/home/runner/tg-api-data")
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
-BASE_FILE_URL = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}"
 
 CACHE_DIR = Path("bot_cache")
 CACHE_INDEX = CACHE_DIR / "index.json"
@@ -37,7 +36,6 @@ def wait_for_local_api():
 # Status API
 USE_LOCAL_API = False
 API_URL = BASE_URL
-FILE_URL = BASE_FILE_URL
 
 def tg_api_call(method, data=None, files=None):
     try:
@@ -86,13 +84,13 @@ def upload_to_tempsh(file_path: Path):
 async def process_media(message):
     chat_id = message['chat']['id']
     
-    # Kenalpasti sebarang jenis media (Support Pelbagai Format)
+    # Kenalpasti sebarang jenis media
     attachment = None
     media_types = ['document', 'video', 'audio', 'voice', 'video_note', 'animation', 'photo']
     for mt in media_types:
         if mt in message:
             attachment = message[mt]
-            if mt == 'photo': attachment = attachment[-1] # Ambil kualiti tertinggi
+            if mt == 'photo': attachment = attachment[-1]
             break
     
     if not attachment: return
@@ -107,7 +105,6 @@ async def process_media(message):
     try:
         cached_path = CACHE_DIR / filename
         
-        # Dapatkan maklumat fail (Retrying)
         file_info = None
         for _ in range(3):
             file_info = tg_api_call("getFile", {"file_id": file_id})
@@ -121,15 +118,10 @@ async def process_media(message):
         server_path = file_info['result']['file_path']
         
         if USE_LOCAL_API:
-            # TIRU CARA RUJUKAN: Ambil terus dari storan fizikal
-            container_base = "/var/lib/telegram-bot-api"
-            if server_path.startswith(container_base):
-                relative_path = server_path[len(container_base):].lstrip('/')
-                host_file_path = Path(TELEGRAM_DATA_DIR) / relative_path
-            else:
-                host_file_path = Path(TELEGRAM_DATA_DIR) / server_path.lstrip('/')
+            # LALUAN NATIVE (Mengikut Rujukan)
+            # Storan Local API: TELEGRAM_DATA_DIR/botTOKEN/server_path
+            host_file_path = Path(TELEGRAM_DATA_DIR) / server_path.lstrip('/')
 
-            # Tunggu fail ditulis ke cakera
             found = False
             for _ in range(15):
                 if host_file_path.exists():
@@ -140,13 +132,11 @@ async def process_media(message):
             if found:
                 shutil.copy2(host_file_path, cached_path)
             else:
-                # Sandaran: Gunakan URL fail Local API
-                # Format: http://localhost:8081/file/botTOKEN/file_path
+                # Sandaran muat turun melalui URL Local
                 file_download_url = f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}/{server_path}"
                 resp = requests.get(file_download_url, stream=True, timeout=600)
                 with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
         else:
-            # Standard API muat turun
             file_download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{server_path}"
             resp = requests.get(file_download_url, stream=True, timeout=600)
             with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
@@ -191,18 +181,13 @@ async def process_media(message):
         tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_msg_id, "text": f"❌ Ralat: {str(e)}"})
 
 async def main():
-    global USE_LOCAL_API, API_URL, FILE_URL
+    global USE_LOCAL_API, API_URL
     if not TELEGRAM_TOKEN:
         print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai!")
         return
     
     USE_LOCAL_API = wait_for_local_api()
-    if USE_LOCAL_API:
-        API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}"
-        FILE_URL = f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}"
-    else:
-        API_URL = BASE_URL
-        FILE_URL = BASE_FILE_URL
+    API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
     
     print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
     print("Bot dimulakan.")

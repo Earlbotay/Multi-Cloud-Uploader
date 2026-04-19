@@ -14,6 +14,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     
     steps:
       - name: Checkout
@@ -27,62 +28,74 @@ jobs:
       - name: Install dependencies
         run: |
           pip install requests
-      
-      - name: Cache Bot Data
-        uses: actions/cache@v4
-        with:
-          path: bot_cache
-          key: bot-cache-${{ github.run_id }}
-          restore-keys: |
-            bot-cache-
 
-      - name: Cache Telegram Data
-        uses: actions/cache@v4
+      - name: Check Secrets availability
+        id: check-secrets
+        run: |
+          if [ -n "${{ secrets.TELEGRAM_API_ID }}" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore Telegram Bot API Binary
+        id: cache-tg-api
+        if: steps.check-secrets.outputs.available == 'true'
+        uses: actions/cache/restore@v4
         with:
-          path: telegram-data
-          key: tg-data-${{ github.run_id }}
+          path: /usr/local/bin/telegram-bot-api
+          key: tg-bot-api-v1
+
+      - name: Build Telegram Bot API Server
+        if: steps.check-secrets.outputs.available == 'true' && steps.cache-tg-api.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq make git zlib1g-dev libssl-dev gperf cmake g++
+          git clone --recursive https://github.com/tdlib/telegram-bot-api.git /tmp/tg-bot-api
+          cd /tmp/tg-bot-api
+          mkdir build && cd build
+          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr/local ..
+          cmake --build . --target install -j$(nproc)
+
+      - name: Save Telegram Bot API Binary
+        if: steps.check-secrets.outputs.available == 'true' && steps.cache-tg-api.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /usr/local/bin/telegram-bot-api
+          key: tg-bot-api-v1
+
+      - name: Restore Telegram Bot API Data
+        id: cache-tg-data
+        if: steps.check-secrets.outputs.available == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/tg-api-data
+          key: tg-api-data-${{ github.run_id }}
           restore-keys: |
             tg-data-
 
-      - name: Run Telegram Bot API Server
+      - name: Start Telegram Bot API Server
+        if: steps.check-secrets.outputs.available == 'true'
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
-          # Create shared data directory
-          mkdir -p $(pwd)/telegram-data
-          chmod 777 $(pwd)/telegram-data
-          
-          if [ "$(docker ps -q -f name=telegram-bot-api)" ]; then
-            echo "Pelayan sudah berjalan. Melangkau langkah lari Docker."
-          else
-            if [ "$(docker ps -aq -f status=exited -f name=telegram-bot-api)" ]; then
-              echo "Memulakan semula pelayan yang terhenti..."
-              docker start telegram-bot-api
-            else
-              echo "Memulakan pelayan baru..."
-              docker run -d -p 8081:8081 --name telegram-bot-api \
-                -v $(pwd)/telegram-data:/var/lib/telegram-bot-api \
-                -e TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }} \
-                -e TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }} \
-                aiogram/telegram-bot-api:latest \
-                --local --dir /var/lib/telegram-bot-api
-            fi
-          fi
-          
-          # Semakan kesihatan pelayan
-          echo "Menyemak status pelayan..."
+          mkdir -p /home/runner/tg-api-data
+          telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --dir=/home/runner/tg-api-data &
           sleep 5
-          docker ps -a
+          echo "Telegram Bot API Local Server started natively."
 
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_DATA_DIR: ${{ github.workspace }}/telegram-data
+          TELEGRAM_DATA_DIR: /home/runner/tg-api-data
         run: |
           mkdir -p bot_cache
           python bot.py
 
       - name: Save Telegram Data Cache
-        if: always()
+        if: always() && steps.check-secrets.outputs.available == 'true'
         uses: actions/cache/save@v4
         with:
-          path: telegram-data
-          key: tg-data-${{ github.run_id }}
+          path: /home/runner/tg-api-data
+          key: tg-api-data-${{ github.run_id }}
