@@ -3,32 +3,30 @@ import os
 import tempfile
 import requests
 import json
+import shutil
 from pathlib import Path
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters, CommandHandler
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-# Local Bot API Server defaults
 LOCAL_API_URL = "http://localhost:8081"
+# Path on host runner
+TELEGRAM_DATA_DIR = os.getenv("TELEGRAM_DATA_DIR", "telegram-data")
+
 CACHE_DIR = Path("bot_cache")
 CACHE_INDEX = CACHE_DIR / "index.json"
 
-# Ensure cache directory exists
 CACHE_DIR.mkdir(exist_ok=True)
 if not CACHE_INDEX.exists():
-    with open(CACHE_INDEX, "w") as f:
-        json.dump({}, f)
+    with open(CACHE_INDEX, "w") as f: json.dump({}, f)
 
 def load_index():
-    with open(CACHE_INDEX, "r") as f:
-        return json.load(f)
+    with open(CACHE_INDEX, "r") as f: return json.load(f)
 
 def save_index(index):
-    with open(CACHE_INDEX, "w") as f:
-        json.dump(index, f, indent=4)
+    with open(CACHE_INDEX, "w") as f: json.dump(index, f, indent=4)
 
-# API Endpoints for Clouds
 CATBOX_API = "https://catbox.moe/user/api.php"
 TEMPSH_API = "https://temp.sh/upload"
 
@@ -39,38 +37,24 @@ def upload_to_gofile(file_path: Path):
         server = server_resp.json()["data"]["servers"][0]["name"]
         url = f"https://{server}.gofile.io/contents/uploadfile"
         with file_path.open("rb") as f:
-            resp = requests.post(url, files={"file": (file_path.name, f)}, headers=headers, timeout=120)
-        data = resp.json()
-        return data["data"]["downloadPage"] if data.get("status") == "ok" else "Gofile Failed"
-    except Exception as e:
-        return f"Gofile Error: {str(e)}"
+            resp = requests.post(url, files={"file": (file_path.name, f)}, headers=headers, timeout=300)
+        return resp.json()["data"]["downloadPage"]
+    except Exception as e: return f"Gofile Error: {str(e)}"
 
 def upload_to_catbox(file_path: Path):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
         with file_path.open("rb") as f:
-            resp = requests.post(CATBOX_API, data={"req": "upload"}, files={"fileToUpload": (file_path.name, f)}, headers=headers, timeout=120)
-        return resp.text.strip() if resp.status_code == 200 else "Catbox Failed"
-    except Exception as e:
-        return f"Catbox Error: {str(e)}"
+            resp = requests.post(CATBOX_API, data={"req": "upload"}, files={"fileToUpload": (file_path.name, f)}, headers=headers, timeout=300)
+        return resp.text.strip()
+    except Exception as e: return f"Catbox Error: {str(e)}"
 
 def upload_to_tempsh(file_path: Path):
     try:
         with file_path.open("rb") as f:
-            resp = requests.post(TEMPSH_API, files={"file": (file_path.name, f)}, timeout=120)
-        return resp.text.strip() if resp.status_code == 200 else "Temp.sh Failed"
-    except Exception as e:
-        return f"Temp.sh Error: {str(e)}"
-
-async def list_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    index = load_index()
-    if not index:
-        await update.message.reply_text("📭 Cache kosong.")
-        return
-    text = "📂 **Fail dalam Cache:**\n\n"
-    for name, info in index.items():
-        text += f"- `{name}` ({info['size']})\n"
-    await update.message.reply_text(text, parse_mode='Markdown')
+            resp = requests.post(TEMPSH_API, files={"file": (file_path.name, f)}, timeout=300)
+        return resp.text.strip()
+    except Exception as e: return f"Temp.sh Error: {str(e)}"
 
 async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
@@ -79,64 +63,56 @@ async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attachment = (message.document or message.video or message.audio or 
                   (message.photo[-1] if message.photo else None) or 
                   message.voice or message.video_note or message.animation)
-
     if not attachment: return
 
     filename = getattr(attachment, 'file_name', None) or f"file_{attachment.file_unique_id}"
-    
-    status_msg = await message.reply_text(f"⏳ Memproses fail besar: `{filename}`...")
+    status_msg = await message.reply_text(f"⏳ Mendapatkan fail besar: `{filename}`...")
     
     try:
-        # Step 1: Download to local cache
         file_obj = await attachment.get_file()
-        local_path = CACHE_DIR / filename
-        await file_obj.download_to_drive(str(local_path))
+        
+        # Mapping: Local API Server returns path like '/var/lib/telegram-bot-api/bot<token>/documents/file.ext'
+        # We need to change it to host path: 'TELEGRAM_DATA_DIR/bot<token>/documents/file.ext'
+        server_path = file_obj.file_path
+        relative_path = server_path.replace("/var/lib/telegram-bot-api/", "")
+        host_file_path = Path(TELEGRAM_DATA_DIR) / relative_path
 
-        # Update Index
+        if not host_file_path.exists():
+            raise FileNotFoundError(f"Fail tidak dijumpai di host: {host_file_path}")
+
+        # Move to cache dir
+        cached_path = CACHE_DIR / filename
+        shutil.copy(host_file_path, cached_path)
+
+        file_size = f"{os.path.getsize(cached_path) / (1024*1024):.2f} MB"
         index = load_index()
-        file_size = f"{os.path.getsize(local_path) / (1024*1024):.2f} MB"
         index[filename] = {"size": file_size, "id": attachment.file_id}
         save_index(index)
 
         await status_msg.edit_text(f"🚀 Memuat naik `{filename}` ({file_size}) ke Cloud...")
         await message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
 
-        # Step 2: Upload in parallel
         loop = asyncio.get_event_loop()
         tasks = [
-            loop.run_in_executor(None, upload_to_gofile, local_path),
-            loop.run_in_executor(None, upload_to_catbox, local_path),
-            loop.run_in_executor(None, upload_to_tempsh, local_path)
+            loop.run_in_executor(None, upload_to_gofile, cached_path),
+            loop.run_in_executor(None, upload_to_catbox, cached_path),
+            loop.run_in_executor(None, upload_to_tempsh, cached_path)
         ]
         results = await asyncio.gather(*tasks)
         
-        response_text = (
-            f"✅ **Berjaya Disimpan & Diupload!**\n\n"
-            f"📁 **Fail:** `{filename}`\n"
-            f"📊 **Saiz:** `{file_size}`\n\n"
-            f"🌐 **Gofile:** {results[0]}\n"
-            f"🐱 **Catbox:** {results[1]}\n"
-            f"⏱ **Temp.sh:** {results[2]}\n\n"
-            f"💡 *Gunakan /list untuk lihat cache.*"
+        await status_msg.edit_text(
+            f"✅ **Berjaya!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size}`\n\n"
+            f"🌐 **Gofile:** {results[0]}\n🐱 **Catbox:** {results[1]}\n⏱ **Temp.sh:** {results[2]}",
+            parse_mode='Markdown'
         )
-        await status_msg.edit_text(response_text, parse_mode='Markdown')
-        
     except Exception as e:
-        await status_msg.edit_text(f"❌ Ralat: {str(e)}\n\n*Pastikan Local API Server berjalan untuk fail > 20MB.*", parse_mode='Markdown')
+        await status_msg.edit_text(f"❌ Ralat: {str(e)}")
 
 def main():
-    if not TELEGRAM_TOKEN:
-        print("Ralat: TELEGRAM_TOKEN tiada.")
-        return
-
-    # Connect to Local Bot API Server
+    if not TELEGRAM_TOKEN: return
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).base_url(f"{LOCAL_API_URL}/bot").local_mode(True).build()
-    
-    app.add_handler(CommandHandler("list", list_files))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_any_media))
-    
-    print(f"Bot dimulakan dengan Local API di {LOCAL_API_URL}")
+    print(f"Bot dimulakan dengan Local API & Path Mapping.")
     app.run_polling()
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
