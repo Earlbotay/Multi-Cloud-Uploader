@@ -46,16 +46,14 @@ jobs:
           path: /usr/local/bin/telegram-bot-api
           key: tg-bot-api-v1
 
-      - name: Build Telegram Bot API Server
+      - name: Download Telegram Bot API Binary
         if: steps.check-secrets.outputs.available == 'true' && steps.cache-tg-api.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq make git zlib1g-dev libssl-dev gperf cmake g++
-          git clone --recursive https://github.com/tdlib/telegram-bot-api.git /tmp/tg-bot-api
-          cd /tmp/tg-bot-api
-          mkdir build && cd build
-          cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr/local ..
-          cmake --build . --target install -j$(nproc)
+          sudo apt-get install -y -qq wget
+          wget -q https://github.com/mizore6/telegram-bot-api-binaries/releases/latest/download/telegram-bot-api-linux-amd64 -O /usr/local/bin/telegram-bot-api
+          sudo chmod +x /usr/local/bin/telegram-bot-api
+          telegram-bot-api --version
 
       - name: Save Telegram Bot API Binary
         if: steps.check-secrets.outputs.available == 'true' && steps.cache-tg-api.outputs.cache-hit != 'true'
@@ -72,7 +70,7 @@ jobs:
           path: /home/runner/tg-api-data
           key: tg-api-data-${{ github.run_id }}
           restore-keys: |
-            tg-data-
+            tg-api-data-
 
       - name: Start Telegram Bot API Server
         if: steps.check-secrets.outputs.available == 'true'
