@@ -42,26 +42,27 @@ jobs:
           mkdir -p $(pwd)/telegram-data
           chmod 777 $(pwd)/telegram-data
           
-          echo "Starting Telegram Bot API Server..."
-          docker run -d -p 8081:8081 --name telegram-bot-api \
-            -v $(pwd)/telegram-data:/var/lib/telegram-bot-api \
-            -e TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }} \
-            -e TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }} \
-            aiogram/telegram-bot-api:latest \
-            --local --dir /var/lib/telegram-bot-api
-          
-          # Wait for server to start and check health
-          for i in {1..30}; do
-            if docker logs telegram-bot-api 2>&1 | grep -q "listening on port 8081"; then
-              echo "Server is up and running!"
-              break
+          if [ "$(docker ps -q -f name=telegram-bot-api)" ]; then
+            echo "Pelayan sudah berjalan. Melangkau langkah lari Docker."
+          else
+            if [ "$(docker ps -aq -f status=exited -f name=telegram-bot-api)" ]; then
+              echo "Memulakan semula pelayan yang terhenti..."
+              docker start telegram-bot-api
+            else
+              echo "Memulakan pelayan baru..."
+              docker run -d -p 8081:8081 --name telegram-bot-api \
+                -v $(pwd)/telegram-data:/var/lib/telegram-bot-api \
+                -e TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }} \
+                -e TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }} \
+                aiogram/telegram-bot-api:latest \
+                --local --dir /var/lib/telegram-bot-api
             fi
-            echo "Waiting for server to start... ($i/30)"
-            sleep 2
-          done
+          fi
           
+          # Semakan kesihatan pelayan
+          echo "Menyemak status pelayan..."
+          sleep 5
           docker ps -a
-          docker logs telegram-bot-api
 
       - name: Run Bot
         env:

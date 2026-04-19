@@ -3,12 +3,13 @@ import os
 import requests
 import json
 import shutil
+import time
 from pathlib import Path
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
 
-# USE ENVIRONMENT VARIABLES OR DEFAULTS
+# KONFIGURASI API
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 LOCAL_API_SERVER = "http://127.0.0.1:8081"
 TELEGRAM_DATA_DIR = os.getenv("TELEGRAM_DATA_DIR", "/home/runner/work/Multi-Cloud-Uploader/Multi-Cloud-Uploader/telegram-data")
@@ -19,6 +20,16 @@ CACHE_INDEX = CACHE_DIR / "index.json"
 CACHE_DIR.mkdir(exist_ok=True)
 if not CACHE_INDEX.exists():
     with open(CACHE_INDEX, "w") as f: json.dump({}, f)
+
+def is_local_api_available():
+    if not TELEGRAM_TOKEN: return False
+    try:
+        resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=2)
+        return resp.status_code == 200
+    except:
+        return False
+
+USE_LOCAL_API = is_local_api_available()
 
 def load_index():
     with open(CACHE_INDEX, "r") as f: return json.load(f)
@@ -68,30 +79,39 @@ async def handle_any_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_msg = await message.reply_text(f"⏳ Memproses `{filename}`...")
     
     try:
-        # PENTING: Jangan gunakan get_file().download() untuk Local API
-        # Kita hanya perlukan file_path untuk cari fail di storan tempatan
-        file_obj = await attachment.get_file()
-        server_path = file_obj.file_path # Ini adalah laluan mutlak dalam Docker
-
-        # Mapping laluan dari Docker ke Host
-        container_base = "/var/lib/telegram-bot-api"
-        if server_path.startswith(container_base):
-            relative_path = server_path[len(container_base):].lstrip('/')
-            host_file_path = Path(TELEGRAM_DATA_DIR) / relative_path
-        else:
-            host_file_path = Path(TELEGRAM_DATA_DIR) / server_path.lstrip('/')
-
-        # Tunggu fail muncul (Local API mungkin ambil masa sikit untuk tulis fail)
-        import time
-        for _ in range(10):
-            if host_file_path.exists(): break
-            time.sleep(1)
-
-        if not host_file_path.exists():
-            raise FileNotFoundError(f"Fail tidak dijumpai di hos: {host_file_path}")
-
         cached_path = CACHE_DIR / filename
-        shutil.copy2(host_file_path, cached_path)
+        file_obj = await attachment.get_file()
+        
+        if USE_LOCAL_API:
+            # CARA 1: RETRIEVE (Ambil dari Local API Server)
+            server_path = file_obj.file_path
+            container_base = "/var/lib/telegram-bot-api"
+            
+            if server_path.startswith(container_base):
+                relative_path = server_path[len(container_base):].lstrip('/')
+                host_file_path = Path(TELEGRAM_DATA_DIR) / relative_path
+            else:
+                host_file_path = Path(TELEGRAM_DATA_DIR) / server_path.lstrip('/')
+
+            # Tunggu fail muncul di cakera
+            found = False
+            for _ in range(10):
+                if host_file_path.exists():
+                    found = True
+                    break
+                time.sleep(1)
+
+            if found:
+                shutil.copy2(host_file_path, cached_path)
+            else:
+                # Sandaran: Cuba muat turun jika fail fizikal tidak dijumpai
+                await file_obj.download_to_drive(cached_path)
+        else:
+            # CARA 2: DOWNLOAD (Guna Standard API)
+            await file_obj.download_to_drive(cached_path)
+
+        if not cached_path.exists():
+            raise FileNotFoundError("Gagal memproses/memuat turun fail.")
 
         file_size = f"{os.path.getsize(cached_path) / (1024*1024):.2f} MB"
         index = load_index()
@@ -122,14 +142,17 @@ def main():
         print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai dalam persekitaran!")
         return
     
-    # Use direct string for base_url with /bot prefix to avoid masking issues
-    # and ensure local mode is correctly configured
-    api_url = f"{LOCAL_API_SERVER}/bot"
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).base_url(api_url).local_mode(True).build()
+    print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
+    
+    if USE_LOCAL_API:
+        api_url = f"{LOCAL_API_SERVER}/bot"
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).base_url(api_url).local_mode(True).build()
+    else:
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_any_media))
     
-    print("Bot dimulakan dengan Local API statik.")
+    print("Bot dimulakan.")
     app.run_polling()
 
 if __name__ == "__main__": main()
