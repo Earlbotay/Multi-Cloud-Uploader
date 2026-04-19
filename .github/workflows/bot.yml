@@ -36,19 +36,26 @@ jobs:
 
       - name: Run Telegram Bot API Server
         run: |
+          # Create shared data directory
+          mkdir -p $(pwd)/telegram-data
+          chmod 777 $(pwd)/telegram-data
+          
           docker run -d -p 8081:8081 --name telegram-bot-api \
+            -v $(pwd)/telegram-data:/var/lib/telegram-bot-api \
             -e TELEGRAM_API_ID=${{ secrets.TELEGRAM_API_ID }} \
             -e TELEGRAM_API_HASH=${{ secrets.TELEGRAM_API_HASH }} \
-            aiogram/telegram-bot-api:latest
+            aiogram/telegram-bot-api:latest \
+            --local --dir /var/lib/telegram-bot-api
           
           # Wait for server to start
-          sleep 10
+          sleep 15
           docker logs telegram-bot-api
 
       - name: Run Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          # Path seen by the bot on the runner host
+          TELEGRAM_DATA_DIR: ${{ github.workspace }}/telegram-data
         run: |
-          # Create cache dir if restored cache is missing
           mkdir -p bot_cache
           python bot.py
