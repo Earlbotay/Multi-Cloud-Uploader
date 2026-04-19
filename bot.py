@@ -19,16 +19,24 @@ CACHE_DIR.mkdir(exist_ok=True)
 if not CACHE_INDEX.exists():
     with open(CACHE_INDEX, "w") as f: json.dump({}, f)
 
-def is_local_api_available():
+def check_local_api():
     if not TELEGRAM_TOKEN: return False
     try:
-        resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=2)
-        return resp.status_code == 200
+        # Cuba hubungi Local API (berikan 5 cubaan)
+        for _ in range(5):
+            try:
+                resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=2)
+                if resp.status_code == 200: return True
+            except:
+                pass
+            time.sleep(2)
+        return False
     except:
         return False
 
-USE_LOCAL_API = is_local_api_available()
-API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
+# Kita akan tentukan mod di dalam main()
+USE_LOCAL_API = False
+API_URL = BASE_URL
 
 def tg_api_call(method, data=None, files=None):
     try:
@@ -171,9 +179,14 @@ async def process_media(message):
         tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_msg_id, "text": f"❌ Ralat: {str(e)}"})
 
 async def main():
+    global USE_LOCAL_API, API_URL
     if not TELEGRAM_TOKEN:
         print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai!")
         return
+    
+    print("Menyemak ketersediaan Local API...")
+    USE_LOCAL_API = check_local_api()
+    API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
     
     print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
     print("Bot dimulakan.")
