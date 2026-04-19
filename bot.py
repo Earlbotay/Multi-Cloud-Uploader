@@ -119,8 +119,10 @@ def main():
         print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai dalam persekitaran!")
         return
     
-    # Use direct string for base_url to avoid GitHub Actions masking issues
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).base_url("http://127.0.0.1:8081").local_mode(True).build()
+    # Use direct string for base_url with /bot prefix to avoid masking issues
+    # and ensure local mode is correctly configured
+    api_url = f"{LOCAL_API_SERVER}/bot"
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).base_url(api_url).local_mode(True).build()
     
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND & ~filters.TEXT, handle_any_media))
     
