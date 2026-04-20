@@ -82,14 +82,16 @@ async def process_media(message):
         return
     
     tg_file_path = file_info['result']['file_path']
-    extension = Path(tg_file_path).suffix # Contoh: .jpg, .mp4
+    # Ambil extension daripada path Telegram (contoh: .jpg)
+    ext = os.path.splitext(tg_file_path)[1]
     
-    # Tentukan nama fail
-    orig_name = attachment.get('file_name')
-    if orig_name:
-        filename = orig_name
-    else:
-        filename = f"{file_unique_id}{extension}"
+    # Jika extension kosong (jarang berlaku), kita cuba teka atau guna .bin
+    if not ext:
+        ext = ".bin"
+
+    # Guna file_unique_id + extension sebagai nama fail rasmi untuk diupload
+    # Ini menjamin format sentiasa ada dalam request ke API
+    filename = f"{file_unique_id}{ext}"
     
     index = load_index()
     cached_path = CACHE_DIR / filename
