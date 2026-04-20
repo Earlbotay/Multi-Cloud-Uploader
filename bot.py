@@ -67,7 +67,6 @@ def upload_to_gofile(file_path: Path):
 async def upload_to_litterbox(file_path: Path):
     browser = None
     try:
-        # Launch browser dengan tetapan paling stabil
         browser = await launch(
             headless=True,
             args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -75,36 +74,36 @@ async def upload_to_litterbox(file_path: Path):
         )
         page = await browser.newPage()
         
-        # Penapis link (RAM based)
-        alert_link = [None]
+        # Monitor Link via Alert
+        result = {"link": None}
         async def handle_dialog(dialog):
             if "https://litterbox.catbox.moe/" in dialog.message:
-                alert_link[0] = dialog.message
+                result["link"] = dialog.message
             await dialog.dismiss()
         page.on('dialog', lambda d: asyncio.ensure_future(handle_dialog(d)))
 
-        await page.goto('https://litterbox.catbox.moe/', {'timeout': 60000})
+        await page.goto('https://litterbox.catbox.moe/', {'waitUntil': 'networkidle2'})
         
-        # Pilih masa 72 jam
-        await page.click('button[id="72h"]')
+        # Set Masa 72h secara paksa via JS
+        await page.evaluate('() => document.getElementById("72h").click()')
         
-        # Pilih fail (Dropzone akan terus upload sebaik sahaja fail dipilih)
+        # Trigger Dropzone secara manual
         input_file = await page.querySelector('input[type=file]')
         await input_file.uploadFile(str(file_path.absolute()))
         
-        # Tunggu maklum balas (Maksimum 10 minit untuk fail besar)
+        # Tunggu maklum balas (Maksimum 10 minit)
         start_time = time.time()
         while time.time() - start_time < 600:
-            if alert_link[0]: return alert_link[0].strip()
+            if result["link"]: return result["link"].strip()
             
-            # Semak jika link muncul dalam teks halaman
+            # Semak jika link muncul dalam teks (Fallback)
             content = await page.evaluate('() => document.body.innerText')
             found = re.findall(r'https://litterbox\.catbox\.moe/[a-zA-Z0-9]+\.[a-zA-Z0-9]+', content)
             if found: return found[0].strip()
             
             await asyncio.sleep(5)
             
-        return "Litterbox Error: Timeout (Link tidak dikesan)"
+        return "Litterbox Timeout (Gunakan Gofile)"
     except Exception as e:
         return f"Litterbox Error: {str(e)}"
     finally:
@@ -146,27 +145,21 @@ async def process_media(message):
     try:
         if not is_cached:
             file_info = tg_api_call("getFile", {"file_id": file_id})
-            if not file_info or not file_info.get('ok'): raise Exception("Gagal info fail")
+            if not file_info or not file_info.get('ok'): raise Exception("Info fail gagal")
             
-            if USE_LOCAL_API:
-                server_path = file_info['result']['file_path']
-                host_path = Path(server_path) if server_path.startswith('/') else Path(TELEGRAM_DATA_DIR) / f"bot{TELEGRAM_TOKEN}" / server_path.lstrip('/')
-                if host_path.exists(): shutil.copy2(host_path, cached_path)
-                else:
-                    r = requests.get(f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}/{server_path.lstrip('/')}", stream=True)
-                    with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
-            else:
-                file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info['result']['file_path']}"
-                r = requests.get(file_url, stream=True)
-                with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
+            # Download fail dari Telegram
+            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info['result']['file_path']}"
+            r = requests.get(file_url, stream=True)
+            with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
             
             index[file_unique_id] = {"path": str(cached_path), "name": filename}
             save_index(index)
 
         if not cached_path.exists() or os.path.getsize(cached_path) == 0: raise Exception("Fail kosong")
 
-        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik `{filename}` ({file_size_str})...", "parse_mode": "Markdown"})
+        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik `{filename}` ({file_size_str}) ke Cloud...", "parse_mode": "Markdown"})
 
+        # Jalankan Gofile & Litterbox
         gofile_link = await asyncio.get_event_loop().run_in_executor(None, upload_to_gofile, cached_path)
         litter_link = await upload_to_litterbox(cached_path)
         
