@@ -18,7 +18,7 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 def wait_for_local_api():
     if not TELEGRAM_TOKEN: return False
-    for _ in range(5):
+    for _ in range(3):
         try:
             resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=2)
             if resp.status_code == 200: return True
@@ -44,7 +44,7 @@ def sanitize_filename(name: str):
 
 def upload_to_gofile(file_path: Path):
     try:
-        s_resp = requests.get("https://api.gofile.io/servers").json()
+        s_resp = requests.get("https://api.gofile.io/servers", timeout=10).json()
         server = s_resp["data"]["servers"][0]["name"]
         with file_path.open("rb") as f:
             resp = requests.post(f"https://{server}.gofile.io/contents/uploadfile", files={"file": (file_path.name, f)}, timeout=600)
@@ -67,6 +67,17 @@ def upload_to_tempsh(file_path: Path):
                 return raw_link
         return "Temp.sh Error"
     except: return "Temp.sh Error"
+
+def upload_to_litterbox(file_path: Path):
+    try:
+        with file_path.open("rb") as f:
+            # Litterbox API: 72 jam simpanan
+            data = {"req": "fileupload", "time": "72h"}
+            files = {"fileToUpload": (file_path.name, f)}
+            resp = requests.post("https://litterbox.catbox.moe/resources/internals/api.php", data=data, files=files, timeout=600)
+            return resp.text.strip()
+    except Exception as e:
+        return f"Litterbox Error: {str(e)}"
 
 async def process_media(message):
     chat_id = message['chat']['id']
@@ -106,12 +117,13 @@ async def process_media(message):
 
         if not cached_path.exists() or os.path.getsize(cached_path) == 0: raise Exception("Fail kosong")
 
-        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik `{filename}` ({file_size_str})...", "parse_mode": "Markdown"})
+        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik `{filename}` ({file_size_str}) ke 3 Cloud...", "parse_mode": "Markdown"})
 
         loop = asyncio.get_event_loop()
         res = await asyncio.gather(
             loop.run_in_executor(None, upload_to_gofile, cached_path),
-            loop.run_in_executor(None, upload_to_tempsh, cached_path)
+            loop.run_in_executor(None, upload_to_tempsh, cached_path),
+            loop.run_in_executor(None, upload_to_litterbox, cached_path)
         )
         
         tg_api_call("editMessageText", {
@@ -121,7 +133,8 @@ async def process_media(message):
                 f"📁 **Fail:** `{filename}`\n"
                 f"📊 **Saiz:** `{file_size_str}`\n\n"
                 f"🌐 **Gofile:** {res[0]}\n"
-                f"⏱ **Temp.sh:** {res[1]}"
+                f"⏱ **Temp.sh:** {res[1]}\n"
+                f"🐱 **Litterbox (72h):** {res[2]}"
             ),
             "parse_mode": "Markdown", "disable_web_page_preview": True
         })
@@ -144,7 +157,11 @@ async def main():
                 for u in updates['result']:
                     offset = u['update_id'] + 1
                     if 'message' in u:
-                        asyncio.create_task(process_media(u['message']))
+                        m = u['message']
+                        if m.get('text') == '/start':
+                            tg_api_call("sendMessage", {"chat_id": m['chat']['id'], "text": "👋 **Multi-Cloud Uploader Online**\n\nSila hantar fail anda."})
+                        else:
+                            asyncio.create_task(process_media(m))
             await asyncio.sleep(0.5)
         except: await asyncio.sleep(5)
 
