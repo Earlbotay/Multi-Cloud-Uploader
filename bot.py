@@ -27,7 +27,7 @@ def wait_for_local_api():
         try:
             resp = requests.get(f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}/getMe", timeout=5)
             if resp.status_code == 200:
-                print(f"✅ Local API sedia selepas {i*2} saat!")
+                print(f"✅ Local API sedia!")
                 return True
         except:
             pass
@@ -66,22 +66,14 @@ def upload_to_gofile(file_path: Path):
         return resp.json()["data"]["downloadPage"]
     except Exception as e: return f"Gofile Error: {str(e)}"
 
-def upload_to_tempsh(file_path: Path, original_name: str):
+def upload_to_tempsh(file_path: Path):
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
+        filename = file_path.name
         with file_path.open("rb") as f:
-            resp = requests.post(TEMPSH_API, files={'file': (original_name, f)}, headers=headers, timeout=600)
+            resp = requests.post(TEMPSH_API, files={'file': (filename, f)}, headers=headers, timeout=600)
             if resp.status_code == 200:
-                raw_link = resp.text.strip()
-                # Server buang underscore? Kita bedah dan paksa letak balik.
-                # Link asal: https://temp.sh/ABCDE/DarkVerseV3.zip
-                # Kita mahu: https://temp.sh/ABCDE/Dark_Verse_V3.zip
-                if "/" in raw_link:
-                    base_part = raw_link.rsplit('/', 1)[0] # Ambil https://temp.sh/ABCDE
-                    fixed_link = f"{base_part}/{original_name}"
-                    print(f"✅ [V6] Link dibetulkan: {fixed_link}")
-                    return fixed_link
-                return raw_link
+                return resp.text.strip()
         return f"Temp.sh Error: Status {resp.status_code}"
     except Exception as e: return f"Temp.sh Error: {str(e)}"
 
@@ -108,16 +100,11 @@ async def process_media(message):
     raw_filename = attachment.get('file_name') or f"file_{attachment['file_unique_id']}"
     filename = sanitize_filename(raw_filename)
     
-    print(f"🚀 [V6] Memproses: {raw_filename} -> {filename}")
-
     file_id = attachment['file_id']
     file_size_tg = attachment.get('file_size', 0)
     file_size_tg_mb = file_size_tg / (1024*1024)
     
     msg_text = f"⏳ Memproses `{filename}` (`{file_size_tg_mb:.2f} MB`)..."
-    if not USE_LOCAL_API and file_size_tg_mb > 20:
-        msg_text += "\n\n⚠️ **Amaran:** Fail > 20MB mungkin gagal tanpa Local API Server!"
-    
     status_resp = tg_api_call("sendMessage", {"chat_id": chat_id, "text": msg_text, "parse_mode": "Markdown"})
     if not status_resp: return
     status_msg_id = status_resp['result']['message_id']
@@ -132,67 +119,55 @@ async def process_media(message):
             time.sleep(2)
 
         if not file_info or not file_info.get('ok'):
-            error_desc = file_info.get('description', 'Ralat tidak diketahui') if file_info else 'Tiada respons'
-            raise Exception(f"Gagal mendapatkan maklumat fail: {error_desc}")
+            raise Exception("Gagal mendapatkan maklumat fail.")
         
         server_path = file_info['result']['file_path']
         
+        # Download logic
         if USE_LOCAL_API:
-            if server_path.startswith('/'):
-                host_file_path = Path(server_path)
-            else:
-                host_file_path = Path(TELEGRAM_DATA_DIR) / f"bot{TELEGRAM_TOKEN}" / server_path.lstrip('/')
-
+            host_file_path = Path(server_path) if server_path.startswith('/') else Path(TELEGRAM_DATA_DIR) / f"bot{TELEGRAM_TOKEN}" / server_path.lstrip('/')
             if host_file_path.exists():
                 shutil.copy2(host_file_path, cached_path)
             else:
-                clean_path = server_path.lstrip('/')
-                file_download_url = f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}/{clean_path}"
-                with requests.get(file_download_url, stream=True, timeout=600) as resp:
-                    resp.raise_for_status()
-                    with open(cached_path, 'wb') as f:
-                        for chunk in resp.iter_content(chunk_size=8192):
-                            if chunk: f.write(chunk)
+                resp = requests.get(f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}/{server_path.lstrip('/')}", stream=True)
+                with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
         else:
-            file_download_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{server_path}"
-            with requests.get(file_download_url, stream=True, timeout=600) as resp:
-                resp.raise_for_status()
-                with open(cached_path, 'wb') as f:
-                    for chunk in resp.iter_content(chunk_size=8192):
-                        if chunk: f.write(chunk)
+            resp = requests.get(f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{server_path}", stream=True)
+            with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
 
         if not cached_path.exists() or os.path.getsize(cached_path) == 0:
-            raise Exception("Fail tidak berjaya diproses atau saiznya 0 bait.")
-
-        file_size_bytes = os.path.getsize(cached_path)
-        file_size_mb = file_size_bytes / (1024*1024)
-        file_size_str = f"{file_size_mb:.2f} MB"
-        
-        index = load_index()
-        index[filename] = {"size": file_size_str, "id": file_id}
-        save_index(index)
+            raise Exception("Fail kosong.")
 
         tg_api_call("editMessageText", {
-            "chat_id": chat_id, 
-            "message_id": status_msg_id, 
-            "text": f"🚀 Memuat naik `{filename}` ({file_size_str}) ke 2 Cloud...",
+            "chat_id": chat_id, "message_id": status_msg_id, 
+            "text": f"🚀 Memuat naik `{filename}` ke 2 Cloud...",
             "parse_mode": "Markdown"
         })
-        tg_api_call("sendChatAction", {"chat_id": chat_id, "action": "upload_document"})
 
         loop = asyncio.get_event_loop()
         tasks = [
             loop.run_in_executor(None, upload_to_gofile, cached_path),
-            loop.run_in_executor(None, upload_to_tempsh, cached_path, filename)
+            loop.run_in_executor(None, upload_to_tempsh, cached_path)
         ]
         results = await asyncio.gather(*tasks)
         
+        # --- PROSES LINK SECARA PAKSA SEBELUM HANTAR (V7) ---
+        temp_link = results[1]
+        if "temp.sh" in temp_link and "/" in temp_link:
+            # Ambil ID unik dari link (cth: gaQsp)
+            parts = temp_link.strip().split('/')
+            # Jika link penuh cth https://temp.sh/ID/file.zip, parts[3] adalah ID
+            if len(parts) >= 4:
+                file_id_url = parts[3]
+                temp_link = f"https://temp.sh/{file_id_url}/{filename}"
+        # --------------------------------------------------
+
         tg_api_call("editMessageText", {
             "chat_id": chat_id,
             "message_id": status_msg_id,
             "text": (
-                f"✅ **Selesai (V6)!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
-                f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {results[1]}"
+                f"✅ **Selesai (Versi V7)!**\n\n📁 **Fail:** `{filename}`\n\n"
+                f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {temp_link}"
             ),
             "parse_mode": "Markdown",
             "disable_web_page_preview": True
@@ -206,15 +181,9 @@ async def process_media(message):
 
 async def main():
     global USE_LOCAL_API, API_URL
-    if not TELEGRAM_TOKEN:
-        print("❌ Ralat: TELEGRAM_TOKEN tidak dijumpai!")
-        return
-    
     USE_LOCAL_API = wait_for_local_api()
     API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
-    
-    print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
-    print("Bot dimulakan [V6].")
+    print(f"Bot V7 dimulakan pada {time.ctime()}")
     
     offset = 0
     while True:
@@ -225,19 +194,12 @@ async def main():
                     offset = update['update_id'] + 1
                     if 'message' in update:
                         msg = update['message']
-                        text = msg.get('text', '')
-                        
-                        if text == '/start':
-                            tg_api_call("sendMessage", {
-                                "chat_id": msg['chat']['id'],
-                                "text": "👋 **Bot Multi-Cloud Uploader dimulakan!**\n\nVersi: `V6 (Explicit Filename)`\nStatus: `Ready`\n\nSila hantar fail untuk dimuat naik.",
-                                "parse_mode": "Markdown"
-                            })
+                        if msg.get('text') == '/start':
+                            tg_api_call("sendMessage", {"chat_id": msg['chat']['id'], "text": f"👋 **Multi-Cloud Bot V7 (Final)**\nDikemaskini: `{time.ctime()}`\n\nSila hantar fail." , "parse_mode": "Markdown"})
                         else:
                             asyncio.create_task(process_media(msg))
             await asyncio.sleep(0.5)
-        except Exception as e:
-            print(f"Polling Error: {e}")
+        except:
             await asyncio.sleep(5)
 
 if __name__ == "__main__":
