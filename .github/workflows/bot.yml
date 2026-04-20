@@ -1,0 +1,118 @@
+name: Multi-Cloud Bot with Local API
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 */5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: bot-concurrency
+  cancel-in-progress: true
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          # Pasang dependencies untuk Chromium (Pyppeteer)
+          sudo apt-get update
+          sudo apt-get install -y libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxcomposite1 libxdamage1 libxrandr2 libgbm1 libxkbcommon0 libasound2t64 libpangocairo-1.0-0 libpango-1.0-0
+
+      - name: Check Secrets availability
+        id: check-secrets
+        run: |
+          if [ -n "${{ secrets.TELEGRAM_API_ID }}" ]; then
+            echo "available=true" >> $GITHUB_OUTPUT
+          else
+            echo "available=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Restore Telegram Bot API Binary
+        id: cache-tg-api
+        if: steps.check-secrets.outputs.available == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /usr/local/bin/telegram-bot-api
+          key: tg-bot-api-v1
+
+      - name: Download Telegram Bot API Binary
+        if: steps.check-secrets.outputs.available == 'true' && steps.cache-tg-api.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget
+          wget -q https://github.com/mizore6/telegram-bot-api-binaries/releases/latest/download/telegram-bot-api-linux-amd64 -O /usr/local/bin/telegram-bot-api
+          sudo chmod +x /usr/local/bin/telegram-bot-api
+          telegram-bot-api --version
+
+      - name: Save Telegram Bot API Binary
+        if: steps.check-secrets.outputs.available == 'true' && steps.cache-tg-api.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /usr/local/bin/telegram-bot-api
+          key: tg-bot-api-v1
+
+      - name: Restore Bot Cache
+        id: cache-bot-data
+        uses: actions/cache/restore@v4
+        with:
+          path: bot_cache
+          key: bot-cache-${{ github.run_id }}
+          restore-keys: |
+            bot-cache-
+
+      - name: Restore Telegram Bot API Data
+        id: cache-tg-data
+        if: steps.check-secrets.outputs.available == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: /home/runner/tg-api-data
+          key: tg-api-data-${{ github.run_id }}
+          restore-keys: |
+            tg-api-data-
+
+      - name: Start Telegram Bot API Server
+        if: steps.check-secrets.outputs.available == 'true'
+        env:
+          API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          mkdir -p /home/runner/tg-api-data
+          telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --dir=/home/runner/tg-api-data &
+          sleep 5
+          echo "Telegram Bot API Local Server started natively."
+
+      - name: Run Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_DATA_DIR: /home/runner/tg-api-data
+        run: |
+          mkdir -p bot_cache
+          python bot.py
+
+      - name: Save Bot Cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: bot_cache
+          key: bot-cache-${{ github.run_id }}
+
+      - name: Save Telegram Data Cache
+        if: always() && steps.check-secrets.outputs.available == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /home/runner/tg-api-data
+          key: tg-api-data-${{ github.run_id }}
