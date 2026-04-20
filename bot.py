@@ -5,12 +5,11 @@ import shutil
 import time
 import subprocess
 import requests
-import mimetypes
 from pathlib import Path
 
 # --- KONFIGURASI ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+LOCAL_API_URL = "http://127.0.0.1:8081"
 CACHE_DIR = Path("bot_cache")
 CACHE_INDEX = CACHE_DIR / "index.json"
 
@@ -26,6 +25,19 @@ def load_index():
 def save_index(index):
     with open(CACHE_INDEX, "w") as f: json.dump(index, f, indent=4)
 
+def check_local_api():
+    """Semak jika Local API Server sedang berjalan."""
+    try:
+        resp = requests.get(f"{LOCAL_API_URL}/bot{TELEGRAM_TOKEN}/getMe", timeout=2)
+        return resp.status_code == 200
+    except:
+        return False
+
+IS_LOCAL = check_local_api()
+BASE_URL = f"{LOCAL_API_URL}/bot{TELEGRAM_TOKEN}" if IS_LOCAL else f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+print(f"INFO: Menggunakan {'Local API Server' if IS_LOCAL else 'Official Telegram API'}")
+
 def tg_api_call(method, data=None):
     try:
         url = f"{BASE_URL}/{method}"
@@ -36,16 +48,20 @@ def tg_api_call(method, data=None):
         return None
 
 def upload_to_earlstore(file_path: Path):
-    """Memuat naik ke EarlStore menggunakan curl untuk hasil pautan 'pure'."""
+    """Memuat naik ke EarlStore menggunakan curl."""
     try:
         url = "https://temp.earlstore.online/api/upload"
+        
+        # Pastikan fail wujud dan tidak kosong sebelum upload
+        if not file_path.exists() or file_path.stat().st_size == 0:
+            return "❌ Ralat: Fail kosong atau tidak wujud di server."
+
         cmd = [
             "curl", "-s",
             "-F", f"file=@{file_path.name}",
             url
         ]
         
-        # Jalankan curl dari dalam folder fail berada
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(file_path.parent))
         if result.returncode != 0:
             return f"❌ Curl Error: {result.stderr}"
@@ -59,7 +75,6 @@ async def process_media(message):
     chat_id = message['chat']['id']
     attachment = None
     
-    # Kenalpasti jenis media
     for mt in ['document', 'video', 'audio', 'voice', 'video_note', 'animation', 'photo']:
         if mt in message:
             attachment = message[mt]
@@ -73,7 +88,6 @@ async def process_media(message):
     file_size_mb = attachment.get('file_size', 0) / (1024 * 1024)
     file_size_str = f"{file_size_mb:.2f} MB"
 
-    # 1. Dapatkan maklumat fail (laluan asal dari Telegram)
     file_info = tg_api_call("getFile", {"file_id": file_id})
     if not file_info or not file_info.get('ok'):
         tg_api_call("sendMessage", {"chat_id": chat_id, "text": "❌ Gagal mendapatkan info fail."})
@@ -84,40 +98,51 @@ async def process_media(message):
     filename = f"{file_unique_id}{ext}"
     cached_path = CACHE_DIR / filename
 
-    # 2. Semak Cache
     index = load_index()
     is_cached = file_unique_id in index and Path(index[file_unique_id]['path']).exists()
     
     if is_cached:
         cached_path = Path(index[file_unique_id]['path'])
-        status_msg = f"⏳ Memproses {filename}... (⚡ Cache)"
-    else:
-        status_msg = f"⏳ Memproses {filename}..."
+        # Sahkan saiz fail cache
+        if cached_path.stat().st_size == 0:
+            is_cached = False # Jika 0MB, kita paksa download balik
 
+    status_msg = f"⏳ Memproses {filename}... {'(⚡ Cache)' if is_cached else ''}"
     status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": status_msg})
     if not status: return
     status_id = status['result']['message_id']
 
     try:
-        # 3. Muat Turun (Jika tiada dalam cache)
         if not is_cached:
-            tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"📥 Memuat turun {filename} ({file_size_str})..."})
+            tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"📥 Menyediakan fail {filename} ({file_size_str})..."})
             
-            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{tg_file_path}"
-            with requests.get(file_url, stream=True) as r:
-                with open(cached_path, 'wb') as f:
-                    shutil.copyfileobj(r.raw, f)
+            if IS_LOCAL:
+                # Jika Local API, tg_file_path adalah path penuh di disk
+                source_path = Path(tg_file_path)
+                if source_path.exists():
+                    shutil.copy2(source_path, cached_path)
+                else:
+                    raise Exception(f"Fail tidak dijumpai di disk Local API: {tg_file_path}")
+            else:
+                # Jika Official API, muat turun melalui HTTP
+                file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{tg_file_path}"
+                with requests.get(file_url, stream=True) as r:
+                    r.raise_for_status()
+                    with open(cached_path, 'wb') as f:
+                        shutil.copyfileobj(r.raw, f)
             
+            # Sahkan saiz selepas muat turun
+            if cached_path.stat().st_size == 0:
+                raise Exception("Muat turun berjaya tapi fail bersaiz 0MB.")
+
             index[file_unique_id] = {"path": str(cached_path), "name": filename}
             save_index(index)
 
-        # 4. Muat Naik ke EarlStore
         tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik ke EarlStore..."})
         
         loop = asyncio.get_event_loop()
         earl_link = await loop.run_in_executor(None, upload_to_earlstore, cached_path)
 
-        # 5. Papar Hasil Akhir
         tg_api_call("editMessageText", {
             "chat_id": chat_id, "message_id": status_id,
             "text": (
@@ -137,7 +162,7 @@ async def main():
         print("Ralat: TELEGRAM_TOKEN tidak ditetapkan!")
         return
         
-    print("🤖 Bot EarlStore dimulakan...")
+    print(f"🤖 Bot EarlStore dimulakan ({'LOCAL' if IS_LOCAL else 'OFFICIAL'})...")
     offset = 0
     while True:
         try:
