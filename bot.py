@@ -54,11 +54,18 @@ def tg_api_call(method, data=None):
         print(f"API Error ({method}): {e}")
         return None
 
-def upload_to_earlstore(file_path: Path):
-    """Memuat naik ke EarlStore menggunakan chunked upload (5MB per chunk)."""
+def safe_edit_message(chat_id, message_id, text):
+    """Cuba edit mesej, jika gagal (cth: mesej dipadam), hantar mesej baru."""
+    res = tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown"})
+    if not res or not res.get("ok"):
+        return tg_api_call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+    return res
+
+def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
+    """Memuat naik ke EarlStore dengan progress update ke Telegram."""
     try:
         url = "https://temp.earlstore.online/api/upload"
-
+        
         if not file_path.exists() or file_path.stat().st_size == 0:
             return "❌ Ralat: Fail kosong atau tidak wujud di server."
 
@@ -66,27 +73,33 @@ def upload_to_earlstore(file_path: Path):
         chunk_size = 5 * 1024 * 1024  # 5MB
         total_chunks = math.ceil(file_size / chunk_size)
         upload_id = str(uuid.uuid4())
-
+        
         final_url = None
 
         with open(file_path, "rb") as f:
             for i in range(total_chunks):
                 chunk_data = f.read(chunk_size)
-
+                
                 payload = {
                     "chunk_index": i,
                     "total_chunks": total_chunks,
                     "upload_id": upload_id
                 }
                 files = {"file": (file_path.name, chunk_data)}
-
-                # Gunakan timeout yang lebih lama untuk fail besar
+                
                 resp = requests.post(url, data=payload, files=files, timeout=120)
-
+                
                 if resp.status_code == 200:
                     data = resp.json()
                     if "url" in data:
                         final_url = data["url"]
+                    
+                    # Update progress setiap 2 chunks atau chunk terakhir untuk kurangkan spam API
+                    if chat_id and status_id and (i % 2 == 0 or i == total_chunks - 1):
+                        percent = int(((i + 1) / total_chunks) * 100)
+                        bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
+                        progress_text = f"🚀 **Memuat naik ke EarlStore...**\n\n`{bar}` {percent}%\n(Bahagian {i+1}/{total_chunks})"
+                        safe_edit_message(chat_id, status_id, progress_text)
                 else:
                     return f"❌ EarlStore Error (Part {i+1}): {resp.text}"
 
@@ -136,13 +149,13 @@ async def process_media(message):
             is_cached = False # Jika 0MB, kita paksa download balik
 
     status_msg = f"⏳ Memproses {filename}... {'(⚡ Cache)' if is_cached else ''}"
-    status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": status_msg})
+    status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": status_msg, "parse_mode": "Markdown"})
     if not status: return
     status_id = status['result']['message_id']
 
     try:
         if not is_cached:
-            tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"📥 Menyediakan fail {filename} ({file_size_str})..."})
+            safe_edit_message(chat_id, status_id, f"📥 **Menyediakan fail:**\n`{filename}` ({file_size_str})...")
             
             if IS_LOCAL:
                 # Jika Local API, tg_file_path adalah path penuh di disk
@@ -168,24 +181,21 @@ async def process_media(message):
             index[file_unique_id] = {"path": str(cached_path), "name": filename}
             await save_index_async(index)
 
-        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik ke EarlStore..."})
+        safe_edit_message(chat_id, status_id, f"🚀 **Memuat naik ke EarlStore...**")
         
         loop = asyncio.get_event_loop()
-        earl_link = await loop.run_in_executor(None, upload_to_earlstore, cached_path)
+        # Pass chat_id and status_id to track progress
+        earl_link = await loop.run_in_executor(None, upload_to_earlstore, cached_path, chat_id, status_id)
 
-        tg_api_call("editMessageText", {
-            "chat_id": chat_id, "message_id": status_id,
-            "text": (
-                f"✅ Selesai!\n\n"
-                f"📁 Fail: {filename}\n"
-                f"📊 Saiz: {file_size_str}\n\n"
-                f"🌐 Pautan: {earl_link}"
-            ),
-            "disable_web_page_preview": True
-        })
+        safe_edit_message(chat_id, status_id, (
+                f"✅ **Selesai!**\n\n"
+                f"📁 **Fail:** `{filename}`\n"
+                f"📊 **Saiz:** {file_size_str}\n\n"
+                f"🌐 **Pautan:** {earl_link}"
+            ))
 
     except Exception as e:
-        tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"❌ Ralat: {str(e)}"})
+        safe_edit_message(chat_id, status_id, f"❌ Ralat: {str(e)}")
 
 async def main():
     if not TELEGRAM_TOKEN:
