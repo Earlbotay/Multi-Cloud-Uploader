@@ -83,6 +83,14 @@ def upload_to_tempsh(file_path: Path):
                 return f"Temp.sh Error: Status {resp.status_code}"
     except Exception as e: return f"Temp.sh Error: {str(e)}"
 
+def sanitize_filename(name: str):
+    # Ganti ruang dan simbol pelik dengan underscore
+    # Hanya benarkan alphanumeric, titik, dan dash
+    import re
+    clean = re.sub(r'[^a-zA-Z0-9._-]', '_', name)
+    # Elakkan underscore bertindih (___)
+    return re.sub(r'_+', '_', clean).strip('_')
+
 async def process_media(message):
     chat_id = message['chat']['id']
     
@@ -97,8 +105,11 @@ async def process_media(message):
     
     if not attachment: return
 
+    raw_filename = attachment.get('file_name') or f"file_{attachment['file_unique_id']}"
+    # AUTO PEMBETULAN NAMA FAIL
+    filename = sanitize_filename(raw_filename)
+    
     file_id = attachment['file_id']
-    filename = attachment.get('file_name') or f"file_{attachment['file_unique_id']}"
     file_size_tg = attachment.get('file_size', 0)
     file_size_tg_mb = file_size_tg / (1024*1024)
     
