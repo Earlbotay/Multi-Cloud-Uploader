@@ -68,22 +68,25 @@ def upload_to_gofile(file_path: Path):
 
 def upload_to_tempsh(file_path: Path):
     try:
+        # Nama fail asal yang ada underscore
         filename = file_path.name
         headers = {"User-Agent": "Mozilla/5.0"}
         
         with file_path.open("rb") as f:
-            files = {'file': (filename, f)}
-            resp = requests.post(TEMPSH_API, files=files, headers=headers, timeout=600)
+            resp = requests.post(TEMPSH_API, files={'file': (filename, f)}, headers=headers, timeout=600)
             
             if resp.status_code == 200:
-                raw_link = resp.text.strip()
-                print(f"DEBUG: Temp.sh raw link: {raw_link}")
-                if "/" in raw_link:
-                    base_url = raw_link.rsplit('/', 1)[0]
-                    fixed_link = f"{base_url}/{filename}"
-                    print(f"DEBUG: Temp.sh fixed link: {fixed_link}")
+                res_text = resp.text.strip()
+                # Contoh: https://temp.sh/gaQsp/DarkVerseV3.zip
+                # Kita cari ID (gaQsp) guna regex
+                match = re.search(r"temp\.sh/([^/]+)", res_text)
+                if match:
+                    file_id = match.group(1)
+                    # PAKSA BINA LINK DENGAN UNDERSCORE
+                    fixed_link = f"https://temp.sh/{file_id}/{filename}"
+                    print(f"✅ [V5] Link dibetulkan: {fixed_link}")
                     return fixed_link
-                return raw_link
+                return res_text
                 
         return f"Temp.sh Error: Status {resp.status_code}"
     except Exception as e: return f"Temp.sh Error: {str(e)}"
@@ -111,8 +114,7 @@ async def process_media(message):
     raw_filename = attachment.get('file_name') or f"file_{attachment['file_unique_id']}"
     filename = sanitize_filename(raw_filename)
     
-    # Cetak di konsol untuk anda semak
-    print(f"DEBUG: Memproses fail: {raw_filename} -> {filename}")
+    print(f"🚀 [V5] Memproses: {raw_filename} -> {filename}")
 
     file_id = attachment['file_id']
     file_size_tg = attachment.get('file_size', 0)
@@ -195,7 +197,7 @@ async def process_media(message):
             "chat_id": chat_id,
             "message_id": status_msg_id,
             "text": (
-                f"✅ **Selesai!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
+                f"✅ **Selesai (V5)!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
                 f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {results[1]}"
             ),
             "parse_mode": "Markdown",
@@ -218,7 +220,7 @@ async def main():
     API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
     
     print(f"Mod API: {'LOCAL' if USE_LOCAL_API else 'STANDARD'}")
-    print("Bot dimulakan.")
+    print("Bot dimulakan [V5].")
     
     offset = 0
     while True:
