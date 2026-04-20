@@ -5,6 +5,8 @@ import shutil
 import time
 import subprocess
 import requests
+import math
+import uuid
 from pathlib import Path
 
 # --- KONFIGURASI ---
@@ -48,29 +50,44 @@ def tg_api_call(method, data=None):
         return None
 
 def upload_to_earlstore(file_path: Path):
-    """Memuat naik ke EarlStore menggunakan curl."""
+    """Memuat naik ke EarlStore menggunakan chunked upload (5MB per chunk)."""
     try:
         url = "https://temp.earlstore.online/api/upload"
-        
-        # Pastikan fail wujud dan tidak kosong sebelum upload
+
         if not file_path.exists() or file_path.stat().st_size == 0:
             return "❌ Ralat: Fail kosong atau tidak wujud di server."
 
-        cmd = [
-            "curl", "-s",
-            "-F", f"file=@{file_path.name}",
-            url
-        ]
-        
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(file_path.parent))
-        if result.returncode != 0:
-            return f"❌ Curl Error: {result.stderr}"
-            
-        data = json.loads(result.stdout)
-        return data.get("url") or f"❌ Error API: {result.stdout}"
+        file_size = file_path.stat().st_size
+        chunk_size = 5 * 1024 * 1024  # 5MB
+        total_chunks = math.ceil(file_size / chunk_size)
+        upload_id = str(uuid.uuid4())
+
+        final_url = None
+
+        with open(file_path, "rb") as f:
+            for i in range(total_chunks):
+                chunk_data = f.read(chunk_size)
+
+                payload = {
+                    "chunk_index": i,
+                    "total_chunks": total_chunks,
+                    "upload_id": upload_id
+                }
+                files = {"file": (file_path.name, chunk_data)}
+
+                # Gunakan timeout yang lebih lama untuk fail besar
+                resp = requests.post(url, data=payload, files=files, timeout=120)
+
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if "url" in data:
+                        final_url = data["url"]
+                else:
+                    return f"❌ EarlStore Error (Part {i+1}): {resp.text}"
+
+        return final_url or "❌ Error: Gagal mendapatkan URL akhir."
     except Exception as e:
         return f"❌ EarlStore Error: {str(e)}"
-
 async def process_media(message):
     chat_id = message['chat']['id']
     attachment = None
