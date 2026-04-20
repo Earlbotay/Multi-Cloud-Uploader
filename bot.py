@@ -48,12 +48,6 @@ def tg_api_call(method, data=None, files=None):
         return resp.json()
     except: return None
 
-def sanitize_filename(name: str):
-    clean = name.replace(" ", "_")
-    clean = re.sub(r'[^a-zA-Z0-9._-]', '', clean)
-    clean = re.sub(r'_+', '_', clean)
-    return clean.strip('_')
-
 def upload_to_earlstore(file_path: Path):
     try:
         url = "https://temp.earlstore.online/api/upload"
@@ -78,8 +72,7 @@ async def process_media(message):
     if not attachment: return
 
     file_unique_id = attachment['file_unique_id']
-    raw_fn = attachment.get('file_name') or f"file_{file_unique_id}"
-    filename = sanitize_filename(raw_fn)
+    filename = attachment.get('file_name') or f"file_{file_unique_id}"
     file_id = attachment['file_id']
     file_size_str = f"{attachment.get('file_size', 0) / (1024*1024):.2f} MB"
     
