@@ -73,21 +73,16 @@ def upload_to_tempsh(file_path: Path):
         with file_path.open("rb") as f:
             resp = requests.post(TEMPSH_API, files={'file': (filename, f)}, headers=headers, timeout=600)
             if resp.status_code == 200:
-                raw_link = resp.text.strip()
-                # CARI ID GUNA REGEX (Cth: cari gaQsp dalam https://temp.sh/gaQsp/File.zip)
-                match = re.search(r"temp\.sh/([^/]+)", raw_link)
-                if match:
-                    file_id = match.group(1)
-                    # BINA LINK BARU SECARA PAKSA DENGAN FILENAME ASAL
-                    return f"https://temp.sh/{file_id}/{filename}"
-                return raw_link
+                return resp.text.strip()
         return f"Temp.sh Error: Status {resp.status_code}"
     except Exception as e: return f"Temp.sh Error: {str(e)}"
 
 def sanitize_filename(name: str):
-    # Ganti ruang ke underscore, kekalkan underscore sedia ada
+    # Tukar ruang ke underscore, biarkan underscore sedia ada
     clean = name.replace(" ", "_")
+    # Buang simbol pelik tapi kekalkan titik dan underscore
     clean = re.sub(r'[^a-zA-Z0-9._-]', '', clean)
+    # Elakkan underscore bertindih (___)
     clean = re.sub(r'_+', '_', clean)
     return clean.strip('_')
 
@@ -127,11 +122,11 @@ async def process_media(message):
             time.sleep(2)
 
         if not file_info or not file_info.get('ok'):
-            raise Exception("Gagal mendapatkan maklumat fail.")
+            raise Exception("Gagal maklumat fail.")
         
         server_path = file_info['result']['file_path']
         
-        # Download logic
+        # Download
         if USE_LOCAL_API:
             host_file_path = Path(server_path) if server_path.startswith('/') else Path(TELEGRAM_DATA_DIR) / f"bot{TELEGRAM_TOKEN}" / server_path.lstrip('/')
             if host_file_path.exists():
@@ -144,7 +139,7 @@ async def process_media(message):
             with open(cached_path, 'wb') as f: shutil.copyfileobj(resp.raw, f)
 
         if not cached_path.exists() or os.path.getsize(cached_path) == 0:
-            raise Exception("Fail kosong.")
+            raise Exception("Fail 0 bait.")
 
         tg_api_call("editMessageText", {
             "chat_id": chat_id, "message_id": status_msg_id, 
@@ -159,12 +154,26 @@ async def process_media(message):
         ]
         results = await asyncio.gather(*tasks)
         
+        # --- V9 ULTIMATE RECONSTRUCTION (DI SINI) ---
+        temp_raw = results[1]
+        final_temp_link = temp_raw
+        if "temp.sh/" in temp_raw:
+            try:
+                # Ambil ID dengan memotong link
+                # https://temp.sh/gaQsp/DarkVerseV3.zip -> gaQsp
+                temp_id = temp_raw.split('temp.sh/')[-1].split('/')[0]
+                final_temp_link = f"https://temp.sh/{temp_id}/{filename}"
+                print(f"DEBUG [V9]: Reconstructed {final_temp_link}")
+            except:
+                pass
+        # ---------------------------------------------
+
         tg_api_call("editMessageText", {
             "chat_id": chat_id,
             "message_id": status_msg_id,
             "text": (
-                f"✅ **Selesai (Versi V8 - Final Fix)!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
-                f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {results[1]}"
+                f"✅ **Selesai (Versi V9 - Ultra Force)!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
+                f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {final_temp_link}"
             ),
             "parse_mode": "Markdown",
             "disable_web_page_preview": True
@@ -180,7 +189,7 @@ async def main():
     global USE_LOCAL_API, API_URL
     USE_LOCAL_API = wait_for_local_api()
     API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
-    print(f"Bot V8 dimulakan pada {time.ctime()}")
+    print(f"Bot V9 dimulakan pada {time.ctime()}")
     
     offset = 0
     while True:
@@ -192,7 +201,7 @@ async def main():
                     if 'message' in update:
                         msg = update['message']
                         if msg.get('text') == '/start':
-                            tg_api_call("sendMessage", {"chat_id": msg['chat']['id'], "text": f"👋 **Multi-Cloud Bot V8 (Final Fix)**\nStatus: `Online`\nDikemaskini: `{time.ctime()}`" , "parse_mode": "Markdown"})
+                            tg_api_call("sendMessage", {"chat_id": msg['chat']['id'], "text": f"👋 **Multi-Cloud Bot V9 (Ultra Force)**\nStatus: `Online`\nUpdate: `{time.ctime()}`" , "parse_mode": "Markdown"})
                         else:
                             asyncio.create_task(process_media(msg))
             await asyncio.sleep(0.5)
