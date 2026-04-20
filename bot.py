@@ -15,7 +15,19 @@ TELEGRAM_DATA_DIR = os.getenv("TELEGRAM_DATA_DIR", "/home/runner/tg-api-data")
 BASE_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 CACHE_DIR = Path("bot_cache")
+CACHE_INDEX = CACHE_DIR / "index.json"
 CACHE_DIR.mkdir(exist_ok=True)
+
+if not CACHE_INDEX.exists():
+    with open(CACHE_INDEX, "w") as f: json.dump({}, f)
+
+def load_index():
+    try:
+        with open(CACHE_INDEX, "r") as f: return json.load(f)
+    except: return {}
+
+def save_index(index):
+    with open(CACHE_INDEX, "w") as f: json.dump(index, f, indent=4)
 
 def wait_for_local_api():
     if not TELEGRAM_TOKEN: return False
@@ -55,7 +67,6 @@ def upload_to_gofile(file_path: Path):
 async def upload_to_litterbox(file_path: Path):
     browser = None
     try:
-        # Launch browser (no-sandbox penting untuk server/Actions)
         browser = await launch(
             headless=True,
             args=['--no-sandbox', '--disable-setuid-sandbox'],
@@ -63,29 +74,17 @@ async def upload_to_litterbox(file_path: Path):
         )
         page = await browser.newPage()
         await page.goto('https://litterbox.catbox.moe/', {'timeout': 60000})
-        
-        # Pilih fail
         input_file = await page.querySelector('input[type=file]')
         await input_file.uploadFile(str(file_path.absolute()))
-        
-        # Pilih masa 72 jam (ia adalah pilihan default atau klik radio button)
         await page.click('#threeDays')
-        
-        # Klik butang upload
         await page.click('#uploadButton')
-        
-        # Tunggu link muncul (Litterbox memaparkan link dalam alert atau teks selepas selesai)
-        # Biasanya Litterbox akan redirect atau papar link di #upload-link
-        await page.waitForSelector('#upload-link', {'timeout': 600000}) # 10 minit
-        
-        # Ambil link
+        await page.waitForSelector('#upload-link', {'timeout': 600000})
         link = await page.evaluate('() => document.querySelector("#upload-link").innerText')
         return link.strip()
     except Exception as e:
         return f"Litterbox Error: {str(e)}"
     finally:
-        if browser:
-            await browser.close()
+        if browser: await browser.close()
 
 async def process_media(message):
     chat_id = message['chat']['id']
@@ -97,40 +96,58 @@ async def process_media(message):
             break
     if not attachment: return
 
-    raw_fn = attachment.get('file_name') or f"file_{attachment['file_unique_id']}"
+    file_unique_id = attachment['file_unique_id']
+    raw_fn = attachment.get('file_name') or f"file_{file_unique_id}"
     filename = sanitize_filename(raw_fn)
     file_id = attachment['file_id']
     file_size_str = f"{attachment.get('file_size', 0) / (1024*1024):.2f} MB"
     
-    status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": f"⏳ Memproses `{filename}`...", "parse_mode": "Markdown"})
+    # SEMAK CACHE DAHULU
+    index = load_index()
+    cached_path = CACHE_DIR / filename
+    
+    is_cached = False
+    if file_unique_id in index:
+        potential_path = Path(index[file_unique_id]['path'])
+        if potential_path.exists():
+            cached_path = potential_path
+            is_cached = True
+
+    status_text = f"⏳ Memproses `{filename}`..."
+    if is_cached: status_text += " (Dari Cache ⚡)"
+    
+    status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": status_text, "parse_mode": "Markdown"})
     if not status: return
     status_id = status['result']['message_id']
     
     try:
-        cached_path = CACHE_DIR / filename
-        file_info = tg_api_call("getFile", {"file_id": file_id})
-        
-        # Download
-        if USE_LOCAL_API:
-            server_path = file_info['result']['file_path']
-            host_path = Path(server_path) if server_path.startswith('/') else Path(TELEGRAM_DATA_DIR) / f"bot{TELEGRAM_TOKEN}" / server_path.lstrip('/')
-            if host_path.exists(): shutil.copy2(host_path, cached_path)
+        if not is_cached:
+            file_info = tg_api_call("getFile", {"file_id": file_id})
+            if not file_info or not file_info.get('ok'): raise Exception("Gagal info fail")
+            
+            # Download Logic
+            if USE_LOCAL_API:
+                server_path = file_info['result']['file_path']
+                host_path = Path(server_path) if server_path.startswith('/') else Path(TELEGRAM_DATA_DIR) / f"bot{TELEGRAM_TOKEN}" / server_path.lstrip('/')
+                if host_path.exists(): shutil.copy2(host_path, cached_path)
+                else:
+                    r = requests.get(f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}/{server_path.lstrip('/')}", stream=True)
+                    with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
             else:
-                r = requests.get(f"{LOCAL_API_SERVER}/file/bot{TELEGRAM_TOKEN}/{server_path.lstrip('/')}", stream=True)
+                file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info['result']['file_path']}"
+                r = requests.get(file_url, stream=True)
                 with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
-        else:
-            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info['result']['file_path']}"
-            r = requests.get(file_url, stream=True)
-            with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
+            
+            # Simpan ke Index
+            index[file_unique_id] = {"path": str(cached_path), "name": filename}
+            save_index(index)
 
         if not cached_path.exists() or os.path.getsize(cached_path) == 0: raise Exception("Fail kosong")
 
         tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"🚀 Memuat naik `{filename}` ({file_size_str})...", "parse_mode": "Markdown"})
 
-        # Muat naik ke Gofile (API)
+        # Muat naik
         gofile_link = await asyncio.get_event_loop().run_in_executor(None, upload_to_gofile, cached_path)
-        
-        # Muat naik ke Litterbox (Pyppeteer)
         litter_link = await upload_to_litterbox(cached_path)
         
         tg_api_call("editMessageText", {
@@ -146,8 +163,6 @@ async def process_media(message):
         })
     except Exception as e:
         tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": status_id, "text": f"❌ Ralat: {str(e)}"})
-    finally:
-        if 'cached_path' in locals() and cached_path.exists(): os.remove(cached_path)
 
 async def main():
     global USE_LOCAL_API, API_URL
@@ -163,11 +178,7 @@ async def main():
                 for u in updates['result']:
                     offset = u['update_id'] + 1
                     if 'message' in u:
-                        m = u['message']
-                        if m.get('text') == '/start':
-                            tg_api_call("sendMessage", {"chat_id": m['chat']['id'], "text": "👋 **Bot Multi-Cloud (Gofile & Litterbox)**\n\nSila hantar fail anda."})
-                        else:
-                            asyncio.create_task(process_media(m))
+                        asyncio.create_task(process_media(u['message']))
             await asyncio.sleep(0.5)
         except: await asyncio.sleep(5)
 

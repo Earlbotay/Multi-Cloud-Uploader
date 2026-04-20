@@ -62,6 +62,15 @@ jobs:
           path: /usr/local/bin/telegram-bot-api
           key: tg-bot-api-v1
 
+      - name: Restore Bot Cache
+        id: cache-bot-data
+        uses: actions/cache/restore@v4
+        with:
+          path: bot_cache
+          key: bot-cache-${{ github.run_id }}
+          restore-keys: |
+            bot-cache-
+
       - name: Restore Telegram Bot API Data
         id: cache-tg-data
         if: steps.check-secrets.outputs.available == 'true'
@@ -90,6 +99,13 @@ jobs:
         run: |
           mkdir -p bot_cache
           python bot.py
+
+      - name: Save Bot Cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: bot_cache
+          key: bot-cache-${{ github.run_id }}
 
       - name: Save Telegram Data Cache
         if: always() && steps.check-secrets.outputs.available == 'true'
