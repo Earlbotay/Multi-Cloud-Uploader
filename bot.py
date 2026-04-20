@@ -5,6 +5,7 @@ import json
 import shutil
 import time
 import re
+import mimetypes
 from pathlib import Path
 
 # KONFIGURASI API
@@ -51,11 +52,16 @@ def tg_api_call(method, data=None, files=None):
 def upload_to_earlstore(file_path: Path):
     try:
         url = "https://temp.earlstore.online/api/upload"
-        # Pastikan kita hantar nama fail yang ada extension
         filename = file_path.name
+        
+        # Teka MIME type berdasarkan extension fail
+        mime_type, _ = mimetypes.guess_type(filename)
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
         with file_path.open("rb") as f:
-            # Format (filename, fileobj, content_type) untuk lebih tepat
-            files = {"file": (filename, f)}
+            # Hantar (filename, fileobj, content_type) secara eksplisit
+            files = {"file": (filename, f, mime_type)}
             resp = requests.post(url, files=files, timeout=600)
         
         data = resp.json()
@@ -104,7 +110,16 @@ async def process_media(message):
     if file_unique_id in index:
         potential_path = Path(index[file_unique_id]['path'])
         if potential_path.exists():
-            cached_path = potential_path
+            # Jika fail asal tidak mempunyai extension dalam namanya di cache, 
+            # kita namakan semula fail cache tersebut supaya ada extension
+            if potential_path.suffix != ext:
+                new_path = potential_path.with_suffix(ext)
+                potential_path.rename(new_path)
+                index[file_unique_id]['path'] = str(new_path)
+                save_index(index)
+                cached_path = new_path
+            else:
+                cached_path = potential_path
             is_cached = True
 
     status_text = f"⏳ Memproses `{filename}`..."
@@ -116,10 +131,7 @@ async def process_media(message):
     
     try:
         if not is_cached:
-            file_info = tg_api_call("getFile", {"file_id": file_id})
-            if not file_info or not file_info.get('ok'): raise Exception("Gagal info fail")
-            
-            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{file_info['result']['file_path']}"
+            file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{tg_file_path}"
             r = requests.get(file_url, stream=True)
             with open(cached_path, 'wb') as f: shutil.copyfileobj(r.raw, f)
             
