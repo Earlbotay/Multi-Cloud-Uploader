@@ -73,12 +73,19 @@ def upload_to_tempsh(file_path: Path):
         with file_path.open("rb") as f:
             resp = requests.post(TEMPSH_API, files={'file': (filename, f)}, headers=headers, timeout=600)
             if resp.status_code == 200:
-                return resp.text.strip()
+                raw_link = resp.text.strip()
+                # CARI ID GUNA REGEX (Cth: cari gaQsp dalam https://temp.sh/gaQsp/File.zip)
+                match = re.search(r"temp\.sh/([^/]+)", raw_link)
+                if match:
+                    file_id = match.group(1)
+                    # BINA LINK BARU SECARA PAKSA DENGAN FILENAME ASAL
+                    return f"https://temp.sh/{file_id}/{filename}"
+                return raw_link
         return f"Temp.sh Error: Status {resp.status_code}"
     except Exception as e: return f"Temp.sh Error: {str(e)}"
 
 def sanitize_filename(name: str):
-    # Tukar ruang ke underscore, buang simbol pelik, kekalkan titik/underscore
+    # Ganti ruang ke underscore, kekalkan underscore sedia ada
     clean = name.replace(" ", "_")
     clean = re.sub(r'[^a-zA-Z0-9._-]', '', clean)
     clean = re.sub(r'_+', '_', clean)
@@ -103,8 +110,9 @@ async def process_media(message):
     file_id = attachment['file_id']
     file_size_tg = attachment.get('file_size', 0)
     file_size_tg_mb = file_size_tg / (1024*1024)
+    file_size_str = f"{file_size_tg_mb:.2f} MB"
     
-    msg_text = f"⏳ Memproses `{filename}` (`{file_size_tg_mb:.2f} MB`)..."
+    msg_text = f"⏳ Memproses `{filename}` (`{file_size_str}`)..."
     status_resp = tg_api_call("sendMessage", {"chat_id": chat_id, "text": msg_text, "parse_mode": "Markdown"})
     if not status_resp: return
     status_msg_id = status_resp['result']['message_id']
@@ -140,7 +148,7 @@ async def process_media(message):
 
         tg_api_call("editMessageText", {
             "chat_id": chat_id, "message_id": status_msg_id, 
-            "text": f"🚀 Memuat naik `{filename}` ke 2 Cloud...",
+            "text": f"🚀 Memuat naik `{filename}` ({file_size_str}) ke 2 Cloud...",
             "parse_mode": "Markdown"
         })
 
@@ -151,23 +159,12 @@ async def process_media(message):
         ]
         results = await asyncio.gather(*tasks)
         
-        # --- PROSES LINK SECARA PAKSA SEBELUM HANTAR (V7) ---
-        temp_link = results[1]
-        if "temp.sh" in temp_link and "/" in temp_link:
-            # Ambil ID unik dari link (cth: gaQsp)
-            parts = temp_link.strip().split('/')
-            # Jika link penuh cth https://temp.sh/ID/file.zip, parts[3] adalah ID
-            if len(parts) >= 4:
-                file_id_url = parts[3]
-                temp_link = f"https://temp.sh/{file_id_url}/{filename}"
-        # --------------------------------------------------
-
         tg_api_call("editMessageText", {
             "chat_id": chat_id,
             "message_id": status_msg_id,
             "text": (
-                f"✅ **Selesai (Versi V7)!**\n\n📁 **Fail:** `{filename}`\n\n"
-                f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {temp_link}"
+                f"✅ **Selesai (Versi V8 - Final Fix)!**\n\n📁 **Fail:** `{filename}`\n📊 **Saiz:** `{file_size_str}`\n\n"
+                f"🌐 **Gofile:** {results[0]}\n⏱ **Temp.sh:** {results[1]}"
             ),
             "parse_mode": "Markdown",
             "disable_web_page_preview": True
@@ -183,7 +180,7 @@ async def main():
     global USE_LOCAL_API, API_URL
     USE_LOCAL_API = wait_for_local_api()
     API_URL = f"{LOCAL_API_SERVER}/bot{TELEGRAM_TOKEN}" if USE_LOCAL_API else BASE_URL
-    print(f"Bot V7 dimulakan pada {time.ctime()}")
+    print(f"Bot V8 dimulakan pada {time.ctime()}")
     
     offset = 0
     while True:
@@ -195,7 +192,7 @@ async def main():
                     if 'message' in update:
                         msg = update['message']
                         if msg.get('text') == '/start':
-                            tg_api_call("sendMessage", {"chat_id": msg['chat']['id'], "text": f"👋 **Multi-Cloud Bot V7 (Final)**\nDikemaskini: `{time.ctime()}`\n\nSila hantar fail." , "parse_mode": "Markdown"})
+                            tg_api_call("sendMessage", {"chat_id": msg['chat']['id'], "text": f"👋 **Multi-Cloud Bot V8 (Final Fix)**\nStatus: `Online`\nDikemaskini: `{time.ctime()}`" , "parse_mode": "Markdown"})
                         else:
                             asyncio.create_task(process_media(msg))
             await asyncio.sleep(0.5)
