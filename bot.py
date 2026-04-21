@@ -8,6 +8,7 @@ import requests
 import math
 import uuid
 import html
+import sys
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -43,9 +44,20 @@ async def save_index_async(index):
 
 def check_local_api():
     try:
-        resp = requests.get(f"{BASE_URL}/getMe", timeout=2)
+        resp = requests.get(f"{BASE_URL}/getMe", timeout=5)
         return resp.status_code == 200
-    except: return False
+    except Exception as e:
+        return False
+
+async def wait_for_local_api(timeout=60):
+    start_time = time.time()
+    print(f"⏳ Menunggu Local Bot API Server sedia (Timeout: {timeout}s)...")
+    while time.time() - start_time < timeout:
+        if check_local_api():
+            print("✅ Local Bot API Server dikesan dan sedia!")
+            return True
+        await asyncio.sleep(2)
+    return False
 
 def tg_api_call(method, data=None):
     try:
@@ -205,14 +217,19 @@ async def process_media(message):
 async def main():
     global main_loop
     if not TELEGRAM_TOKEN:
-        print("Ralat: TELEGRAM_TOKEN tidak ditetapkan!")
-        return
+        print("❌ Ralat: TELEGRAM_TOKEN tidak ditetapkan!")
+        sys.exit(1)
+    
     print(f"🤖 Bot Earl File dimulakan (Strict Local API)...")
-    if not check_local_api():
-        print("KRITIKAL: Local Bot API Server tidak dikesan!")
-        return
+    
+    # Tunggu sehingga Local API sedia
+    if not await wait_for_local_api(timeout=60):
+        print("❌ KRITIKAL: Local Bot API Server tidak dikesan selepas 60 saat!")
+        sys.exit(1)
+        
     main_loop = asyncio.get_running_loop()
     offset = 0
+    print("✅ Bot sedang mendengar pesanan...")
     while True:
         try:
             updates = await tg_api_call_async("getUpdates", {"offset": offset, "timeout": 30})
@@ -221,7 +238,9 @@ async def main():
                     offset = u['update_id'] + 1
                     if 'message' in u: asyncio.create_task(process_media(u['message']))
             await asyncio.sleep(0.5)
-        except Exception as e: await asyncio.sleep(5)
+        except Exception as e: 
+            print(f"⚠️ Warning: Ralat semasa getUpdates: {e}")
+            await asyncio.sleep(5)
 
 if __name__ == "__main__":
     asyncio.run(main())

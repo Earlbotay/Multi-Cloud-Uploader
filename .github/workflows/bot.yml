@@ -91,8 +91,7 @@ jobs:
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
           mkdir -p /home/runner/tg-api-data
-          telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --dir=/home/runner/tg-api-data &
-          sleep 5
+          telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --dir=/home/runner/tg-api-data --log-level error &
           echo "Telegram Bot API Local Server started natively."
 
       - name: Run Bot
