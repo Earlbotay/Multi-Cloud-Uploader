@@ -45,8 +45,11 @@ async def save_index_async(index):
 def check_local_api():
     try:
         resp = requests.get(f"{BASE_URL}/getMe", timeout=5)
+        if resp.status_code != 200:
+            print(f"DEBUG: Server respon tapi status {resp.status_code}: {resp.text}")
         return resp.status_code == 200
     except Exception as e:
+        print(f"DEBUG: Gagal menghubungi Local API: {e}")
         return False
 
 async def wait_for_local_api(timeout=60):
