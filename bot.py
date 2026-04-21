@@ -99,8 +99,8 @@ def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
                     if "url" in data:
                         final_url = data["url"]
                     
-                    # Update progress setiap 2 chunks atau chunk terakhir untuk kurangkan spam API
-                    if chat_id and status_id and (i % 2 == 0 or i == total_chunks - 1):
+                    # Update progress setiap 2 chunks atau chunk terakhir (Hanya jika total_chunks > 1)
+                    if chat_id and status_id and total_chunks > 1 and (i % 2 == 0 or i == total_chunks - 1):
                         percent = int(((i + 1) / total_chunks) * 100)
                         bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
                         progress_text = f"🚀 **Memuat naik ke EarlStore...**\n\n`{bar}` {percent}%\n(Bahagian {i+1}/{total_chunks})"
@@ -190,7 +190,12 @@ async def process_media(message):
         
         loop = asyncio.get_event_loop()
         # Gunakan executor khusus (999 workers) untuk muat naik
+        print(f"DEBUG: Memulakan muat naik fail {filename}...")
         earl_link = await loop.run_in_executor(executor, upload_to_earlstore, cached_path, chat_id, status_id)
+        print(f"DEBUG: Muat naik selesai. Link: {earl_link}")
+
+        # Tambah delay sedikit supaya Telegram tak pening (Rate Limit)
+        await asyncio.sleep(1)
 
         if earl_link and "http" in str(earl_link):
             final_caption = (
@@ -201,7 +206,7 @@ async def process_media(message):
             )
             safe_edit_message(chat_id, status_id, final_caption)
         else:
-            safe_edit_message(chat_id, status_id, f"❌ **Gagal:** API EarlStore tidak memulangkan link yang sah.\n\nRespon: `{earl_link}`")
+            safe_edit_message(chat_id, status_id, f"❌ **Gagal:** API EarlStore tidak memulangkan link yang sah.\n\nRespon API: `{earl_link}`")
 
     except Exception as e:
         safe_edit_message(chat_id, status_id, f"❌ **Ralat:** {str(e)}")
