@@ -91,24 +91,19 @@ jobs:
           API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
         run: |
           mkdir -p /home/runner/tg-api-data
-          echo "📂 Memeriksa ruang disk..."
-          df -h
-          echo "🔍 Memeriksa binary..."
-          ls -l /usr/local/bin/telegram-bot-api
-          sudo chmod +x /usr/local/bin/telegram-bot-api
+          echo "🚀 Memulakan server (v3)..."
+          # Gunakan flag yang betul mengikut help output
+          nohup telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --dir=/home/runner/tg-api-data > server.log 2>&1 &
           
-          echo "🚀 Memulakan server..."
-          nohup telegram-bot-api --api-id=$API_ID --api-hash=$API_HASH --local --dir=/home/runner/tg-api-data --log-level error > server.log 2>&1 &
+          # Tunggu sekejap untuk server mula menulis log
           sleep 5
           
-          echo "📊 Status Proses:"
-          ps aux | grep telegram-bot-api
-          echo "🌐 Status Port 8081:"
-          sudo lsof -i :8081 || echo "Port 8081 tidak aktif!"
+          echo "📊 Status Port 8081:"
+          sudo lsof -i :8081 || echo "⚠️ Port 8081 masih tidak aktif!"
           
           if [ -f server.log ]; then
-            echo "📄 Awal Log Server:"
-            head -n 20 server.log
+            echo "📄 Isi Log Server (Awal):"
+            cat server.log
           fi
 
       - name: Run Bot
