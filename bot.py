@@ -103,7 +103,7 @@ def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
                     if chat_id and status_id and total_chunks > 1 and (i % 2 == 0 or i == total_chunks - 1):
                         percent = int(((i + 1) / total_chunks) * 100)
                         bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
-                        progress_text = f"🚀 <b>Memuat naik ke EarlStore...</b>\n\n<code>{bar}</code> {percent}%\n(Bahagian {i+1}/{total_chunks})"
+                        progress_text = f"🚀 <b>Earl File...</b>\n\n<code>{bar}</code> {percent}%\n(Bahagian {i+1}/{total_chunks})"
                         safe_edit_message(chat_id, status_id, progress_text)
                         # Tambah delay 1 saat antara edit untuk elakkan Rate Limit Telegram
                         time.sleep(1)
@@ -116,6 +116,25 @@ def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
 
 async def process_media(message):
     chat_id = message['chat']['id']
+    
+    # Handle /start command
+    if 'text' in message and message['text'].startswith('/start'):
+        welcome_text = (
+            "<b>👋 Selamat Datang ke Earl File Bot!</b>\n\n"
+            "Saya boleh membantu anda memuat naik fail ke <b>Earl File</b> dengan pantas dan selamat.\n\n"
+            "<b>Cara Guna:</b>\n"
+            "1. Hantar sebarang media (Dokumen, Video, Gambar, APK, dll) ke sini.\n"
+            "2. Tunggu bot memproses dan memuat naik fail anda.\n"
+            "3. Bot akan memberikan pautan hasil muat naik anda.\n\n"
+            "<b>Ciri-ciri:</b>\n"
+            "✅ Sokongan fail besar (>100MB).\n"
+            "✅ Pemprosesan serentak (Multi-upload).\n"
+            "✅ Bar kemajuan (Progress bar) masa nyata.\n\n"
+            "<i>Dibina untuk kelajuan. Selamat mencuba!</i>"
+        )
+        tg_api_call("sendMessage", {"chat_id": chat_id, "text": welcome_text, "parse_mode": "HTML"})
+        return
+
     attachment = None
     
     for mt in ['document', 'video', 'audio', 'voice', 'video_note', 'animation', 'photo']:
@@ -186,7 +205,7 @@ async def process_media(message):
             index[file_unique_id] = {"path": str(cached_path), "name": safe_filename}
             await save_index_async(index)
 
-        safe_edit_message(chat_id, status_id, f"🚀 <b>Memuat naik ke EarlStore...</b>")
+        safe_edit_message(chat_id, status_id, f"🚀 <b>Earl File...</b>")
         
         loop = asyncio.get_event_loop()
         print(f"DEBUG: Memulakan muat naik fail {safe_filename}...")
@@ -199,7 +218,7 @@ async def process_media(message):
             
             # Hantar HASIL (Link) sebagai MESEJ BARU
             final_caption = (
-                f"🔗 <b>Pautan EarlStore Berjaya Dicipta!</b>\n\n"
+                f"🔗 <b>Earl File Berjaya Dicipta!</b>\n\n"
                 f"📁 <b>Fail:</b> <code>{safe_filename}</code>\n"
                 f"📊 <b>Saiz:</b> {file_size_str}\n\n"
                 f"🌐 <b>Pautan:</b> {earl_link}"
