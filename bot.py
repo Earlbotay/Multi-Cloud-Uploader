@@ -7,8 +7,8 @@ import subprocess
 import requests
 import math
 import uuid
+import html
 from pathlib import Path
-
 from concurrent.futures import ThreadPoolExecutor
 
 # --- KONFIGURASI ---
@@ -60,10 +60,10 @@ def tg_api_call(method, data=None):
         return None
 
 def safe_edit_message(chat_id, message_id, text):
-    """Cuba edit mesej, jika gagal (cth: mesej dipadam), hantar mesej baru."""
-    res = tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "Markdown"})
+    """Cuba edit mesej (HTML), jika gagal, hantar mesej baru."""
+    res = tg_api_call("editMessageText", {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"})
     if not res or not res.get("ok"):
-        return tg_api_call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"})
+        return tg_api_call("sendMessage", {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
     return res
 
 def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
@@ -103,7 +103,7 @@ def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
                     if chat_id and status_id and total_chunks > 1 and (i % 2 == 0 or i == total_chunks - 1):
                         percent = int(((i + 1) / total_chunks) * 100)
                         bar = "█" * (percent // 10) + "░" * (10 - (percent // 10))
-                        progress_text = f"🚀 **Memuat naik ke EarlStore...**\n\n`{bar}` {percent}%\n(Bahagian {i+1}/{total_chunks})"
+                        progress_text = f"🚀 <b>Memuat naik ke EarlStore...</b>\n\n<code>{bar}</code> {percent}%\n(Bahagian {i+1}/{total_chunks})"
                         safe_edit_message(chat_id, status_id, progress_text)
                         # Tambah delay 1 saat antara edit untuk elakkan Rate Limit Telegram
                         time.sleep(1)
@@ -113,6 +113,7 @@ def upload_to_earlstore(file_path: Path, chat_id=None, status_id=None):
         return final_url or "❌ Error: Gagal mendapatkan URL akhir."
     except Exception as e:
         return f"❌ EarlStore Error: {str(e)}"
+
 async def process_media(message):
     chat_id = message['chat']['id']
     attachment = None
@@ -137,6 +138,7 @@ async def process_media(message):
 
     tg_file_path = file_info['result']['file_path']
     ext = os.path.splitext(tg_file_path)[1] or ".bin"
+    safe_filename = html.escape(attachment.get('file_name', f"{file_unique_id}{ext}"))
     
     # Folder unik untuk setiap muat naik (TASK ISOLATION)
     task_id = str(uuid.uuid4())[:8]
@@ -151,70 +153,67 @@ async def process_media(message):
     
     if is_cached:
         cached_path = Path(index[file_unique_id]['path'])
-        # Sahkan saiz fail cache
         if cached_path.stat().st_size == 0:
-            is_cached = False # Jika 0MB, kita paksa download balik
+            is_cached = False
 
-    status_msg = f"⏳ Memproses {filename}... {'(⚡ Cache)' if is_cached else ''}"
-    status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": status_msg, "parse_mode": "Markdown"})
+    status_msg = f"⏳ Memproses <b>{safe_filename}</b>... {'(⚡ Cache)' if is_cached else ''}"
+    status = tg_api_call("sendMessage", {"chat_id": chat_id, "text": status_msg, "parse_mode": "HTML"})
     if not status: return
     status_id = status['result']['message_id']
 
     try:
         if not is_cached:
-            safe_edit_message(chat_id, status_id, f"📥 **Menyediakan fail:**\n`{filename}` ({file_size_str})...")
+            safe_edit_message(chat_id, status_id, f"📥 <b>Menyediakan fail:</b>\n<code>{safe_filename}</code> ({file_size_str})...")
             
             if IS_LOCAL:
-                # Jika Local API, tg_file_path adalah path penuh di disk
                 source_path = Path(tg_file_path)
                 if source_path.exists():
                     shutil.copy2(source_path, cached_path)
                 else:
                     raise Exception(f"Fail tidak dijumpai di disk Local API: {tg_file_path}")
             else:
-                # Jika Official API, muat turun melalui HTTP
                 file_url = f"https://api.telegram.org/file/bot{TELEGRAM_TOKEN}/{tg_file_path}"
                 with requests.get(file_url, stream=True) as r:
                     r.raise_for_status()
                     with open(cached_path, 'wb') as f:
                         shutil.copyfileobj(r.raw, f)
             
-            # Sahkan saiz selepas muat turun
             if cached_path.stat().st_size == 0:
                 raise Exception("Muat turun berjaya tapi fail bersaiz 0MB.")
 
             # Simpan dalam index secara selamat (Async Lock)
             index = load_index()
-            index[file_unique_id] = {"path": str(cached_path), "name": filename}
+            index[file_unique_id] = {"path": str(cached_path), "name": safe_filename}
             await save_index_async(index)
 
-        safe_edit_message(chat_id, status_id, f"🚀 **Memuat naik ke EarlStore...**")
+        safe_edit_message(chat_id, status_id, f"🚀 <b>Memuat naik ke EarlStore...</b>")
         
         loop = asyncio.get_event_loop()
-        # Gunakan executor khusus (999 workers) untuk muat naik
-        print(f"DEBUG: Memulakan muat naik fail {filename}...")
+        print(f"DEBUG: Memulakan muat naik fail {safe_filename}...")
         earl_link = await loop.run_in_executor(executor, upload_to_earlstore, cached_path, chat_id, status_id)
         print(f"DEBUG: Muat naik selesai. Link: {earl_link}")
 
         if earl_link and "http" in str(earl_link):
-            # Finalize mesej progress lama
-            safe_edit_message(chat_id, status_id, f"✅ **Muat naik selesai!**\nSila semak mesej di bawah untuk pautan.")
+            # Finalize progress
+            safe_edit_message(chat_id, status_id, f"✅ <b>Muat naik selesai!</b>\nSila semak mesej di bawah.")
             
             # Hantar HASIL (Link) sebagai MESEJ BARU
             final_caption = (
-                f"🔗 **Pautan EarlStore Berjaya Dicipta!**\n\n"
-                f"📁 **Fail:** `{filename}`\n"
-                f"📊 **Saiz:** {file_size_str}\n\n"
-                f"🌐 **Pautan:** {earl_link}"
+                f"🔗 <b>Pautan EarlStore Berjaya Dicipta!</b>\n\n"
+                f"📁 <b>Fail:</b> <code>{safe_filename}</code>\n"
+                f"📊 <b>Saiz:</b> {file_size_str}\n\n"
+                f"🌐 <b>Pautan:</b> {earl_link}"
             )
-            tg_api_call("sendMessage", {"chat_id": chat_id, "text": final_caption, "parse_mode": "Markdown"})
+            res = tg_api_call("sendMessage", {"chat_id": chat_id, "text": final_caption, "parse_mode": "HTML"})
+            if not res or not res.get("ok"):
+                # Fallback jika gagal hantar mesej cantik
+                tg_api_call("sendMessage", {"chat_id": chat_id, "text": f"✅ Berjaya!\nLink: {earl_link}"})
         else:
-            safe_edit_message(chat_id, status_id, f"❌ **Gagal:** API EarlStore tidak memulangkan link yang sah.\n\nRespon API: `{earl_link}`")
+            safe_edit_message(chat_id, status_id, f"❌ <b>Gagal:</b> API tidak memulangkan link sah.\nRespon: <code>{html.escape(str(earl_link))}</code>")
 
     except Exception as e:
-        safe_edit_message(chat_id, status_id, f"❌ **Ralat:** {str(e)}")
+        safe_edit_message(chat_id, status_id, f"❌ <b>Ralat:</b> {html.escape(str(e))}")
     finally:
-        # PENTING: Bersihkan folder task selepas selesai untuk elakkan storan penuh
         try:
             if task_dir.exists():
                 shutil.rmtree(task_dir)
